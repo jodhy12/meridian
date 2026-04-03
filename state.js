@@ -9,9 +9,12 @@
  */
 
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 
-const STATE_FILE = "./state.json";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const STATE_FILE = path.join(__dirname, "state.json");
 
 const MAX_RECENT_EVENTS = 20;
 

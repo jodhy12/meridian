@@ -145,18 +145,25 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       const ACTION_INTENTS = /\b(deploy|open|add liquidity|close|exit|withdraw|claim|swap|block|unblock)\b/i;
       const toolChoice = (step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) ? "required" : "auto";
 
+      let effectiveToolChoice = agentType === "SCREENER" ? "auto" : toolChoice;
+      // log("agent", `${maxOutputTokens} - ${config.llm.maxTokens} - ${toolChoice} - ${mustUseRealTool}`)
       for (let attempt = 0; attempt < 3; attempt++) {
-        response = await client.chat.completions.create({
+        const body = {
           model: usedModel,
           messages,
           tools: getToolsForRole(agentType, goal),
-          tool_choice: toolChoice,
+          tool_choice: effectiveToolChoice,
           temperature: config.llm.temperature,
           max_tokens: maxOutputTokens ?? config.llm.maxTokens,
-        });
+        }
+        // log('agent', JSON.stringify(body))
+        response = await client.chat.completions.create(body);
         if (response.choices?.length) break;
         const errCode = response.error?.code;
-        if (errCode === 502 || errCode === 503 || errCode === 529) {
+        if (errCode === 404 || response.error?.message?.includes("tool_choice")) {
+          log("agent", `Model ${usedModel} does not support tool_choice, retrying with 'auto'`);
+          effectiveToolChoice = "auto";
+        } else if (errCode === 502 || errCode === 503 || errCode === 529) {
           const wait = (attempt + 1) * 5000;
           if (attempt === 1 && usedModel !== FALLBACK_MODEL) {
             usedModel = FALLBACK_MODEL;

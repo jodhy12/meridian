@@ -1063,7 +1063,8 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
           return;
         }
         const fs = await import("fs");
-        const lessonsData = JSON.parse(fs.default.readFileSync("./lessons.json", "utf8"));
+        const lessonsPath = new URL("./lessons.json", import.meta.url).pathname;
+        const lessonsData = JSON.parse(fs.default.readFileSync(lessonsPath, "utf8"));
         const result = evolveThresholds(lessonsData.performance, config);
         if (!result || Object.keys(result.changes).length === 0) {
           console.log("\nNo threshold changes needed — current settings already match performance data.\n");
@@ -1095,6 +1096,77 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   log("startup", "Non-TTY mode — starting cron cycles immediately.");
   startCronJobs();
   maybeRunMissedBriefing().catch(() => { });
+  startPolling(async (text) => {
+    // Minimal telegramHandler for non-TTY mode
+    if (text === "/briefing") {
+      try {
+        const briefing = await generateBriefing();
+        await sendHTML(briefing);
+      } catch (e) {
+        await sendMessage(`Error: ${e.message}`).catch(() => {});
+      }
+      return;
+    }
+    if (text === "/positions") {
+      try {
+        const { positions, total_positions } = await getMyPositions({ force: true });
+        if (total_positions === 0) { await sendMessage("No open positions."); return; }
+        const cur = config.management.solMode ? "◎" : "$";
+        const lines = positions.map((p, i) => {
+          const pnl = p.pnl_usd >= 0 ? `+${cur}${p.pnl_usd}` : `-${cur}${Math.abs(p.pnl_usd)}`;
+          const age = p.age_minutes != null ? `${p.age_minutes}m` : "?";
+          const oor = !p.in_range ? " ⚠️OOR" : "";
+          return `${i + 1}. ${p.pair} | ${cur}${p.total_value_usd} | PnL: ${pnl} | fees: ${cur}${p.unclaimed_fees_usd} | ${age}${oor}`;
+        });
+        await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /set <n> <note> to set instruction`);
+      } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+      return;
+    }
+    const closeMatch = text.match(/^\/close\s+(\d+)$/i);
+    if (closeMatch) {
+      try {
+        const idx = parseInt(closeMatch[1]) - 1;
+        const { positions } = await getMyPositions({ force: true });
+        if (idx < 0 || idx >= positions.length) { await sendMessage(`Invalid number. Use /positions first.`); return; }
+        const pos = positions[idx];
+        await sendMessage(`Closing ${pos.pair}...`);
+        const result = await closePosition({ position_address: pos.position });
+        if (result.success) {
+          const closeTxs = result.close_txs?.length ? result.close_txs : result.txs;
+          const claimNote = result.claim_txs?.length ? `\nClaim txs: ${result.claim_txs.join(", ")}` : "";
+          await sendMessage(`✅ Closed ${pos.pair}\nPnL: ${config.management.solMode ? "◎" : "$"}${result.pnl_usd ?? "?"} | close txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}`);
+        } else {
+          await sendMessage(`❌ Close failed: ${JSON.stringify(result)}`);
+        }
+      } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+      return;
+    }
+    const setMatch = text.match(/^\/set\s+(\d+)\s+(.+)$/i);
+    if (setMatch) {
+      try {
+        const idx = parseInt(setMatch[1]) - 1;
+        const note = setMatch[2].trim();
+        const { positions } = await getMyPositions({ force: true });
+        if (idx < 0 || idx >= positions.length) { await sendMessage(`Invalid number. Use /positions first.`); return; }
+        const pos = positions[idx];
+        setPositionInstruction(pos.position, note);
+        await sendMessage(`✅ Note set for ${pos.pair}:\n"${note}"`);
+      } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+      return;
+    }
+    // General agent loop
+    try {
+      log("telegram", `Incoming (non-TTY): ${text}`);
+      const hasCloseIntent = /\bclose\b|\bsell\b|\bexit\b|\bwithdraw\b/i.test(text);
+      const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b|\badd liquidity\b/i.test(text);
+      const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
+      const agentModel = agentRole === "SCREENER" ? config.llm.screeningModel : config.llm.generalModel;
+      const { content } = await agentLoop(text, config.llm.maxSteps, [], agentRole, agentModel);
+      await sendMessage(stripThink(content));
+    } catch (e) {
+      await sendMessage(`Error: ${e.message}`).catch(() => {});
+    }
+  });
   (async () => {
     try {
       await agentLoop(`

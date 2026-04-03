@@ -6,9 +6,12 @@
  */
 
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 
-const BLACKLIST_FILE = "./token-blacklist.json";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const BLACKLIST_FILE = path.join(__dirname, "token-blacklist.json");
 
 function load() {
   if (!fs.existsSync(BLACKLIST_FILE)) return {};

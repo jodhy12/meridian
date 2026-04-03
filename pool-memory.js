@@ -6,9 +6,12 @@
  */
 
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 
-const POOL_MEMORY_FILE = "./pool-memory.json";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const POOL_MEMORY_FILE = path.join(__dirname, "pool-memory.json");
 
 function load() {
   if (!fs.existsSync(POOL_MEMORY_FILE)) return {};
