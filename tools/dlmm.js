@@ -708,15 +708,19 @@ export async function closePosition({ position_address, reason }) {
       }
 
       // Fetch closed PnL from API — authoritative source after withdrawal settles
+      // Retry up to 4 times with increasing delay to allow blockchain + API indexing to settle
       let pnlUsd = 0;
       let pnlPct = 0;
       let finalValueUsd = 0;
       let initialUsd = 0;
       let feesUsd = tracked.total_fees_claimed_usd || 0;
-      try {
-        const closedUrl = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${wallet.publicKey.toString()}&status=closed&pageSize=50&page=1`;
-        const res = await fetch(closedUrl);
-        if (res.ok) {
+      const closedUrl = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${wallet.publicKey.toString()}&status=closed&pageSize=50&page=1`;
+      const SETTLE_DELAYS = [5000, 10000, 15000, 20000]; // ms between retries
+      for (let attempt = 0; attempt < SETTLE_DELAYS.length; attempt++) {
+        await new Promise(r => setTimeout(r, SETTLE_DELAYS[attempt]));
+        try {
+          const res = await fetch(closedUrl);
+          if (!res.ok) { log("close_warn", `Closed PnL API error ${res.status}, attempt ${attempt + 1}`); continue; }
           const data = await res.json();
           const posEntry = (data.positions || []).find(p => p.positionAddress === position_address);
           if (posEntry) {
@@ -725,13 +729,14 @@ export async function closePosition({ position_address, reason }) {
             finalValueUsd = parseFloat(posEntry.allTimeWithdrawals?.total?.usd || 0);
             initialUsd    = parseFloat(posEntry.allTimeDeposits?.total?.usd || 0);
             feesUsd       = parseFloat(posEntry.allTimeFees?.total?.usd || 0) || feesUsd;
-            log("close", `Closed PnL from API: pnl=${pnlUsd.toFixed(2)} USD (${pnlPct.toFixed(2)}%), withdrawn=${finalValueUsd.toFixed(2)}, deposited=${initialUsd.toFixed(2)}`);
+            log("close", `Closed PnL from API (attempt ${attempt + 1}): pnl=${pnlUsd.toFixed(2)} USD (${pnlPct.toFixed(2)}%), withdrawn=${finalValueUsd.toFixed(2)}, deposited=${initialUsd.toFixed(2)}`);
+            break; // got authoritative data, stop retrying
           } else {
-            log("close_warn", `Position not found in status=closed response — may still be settling`);
+            log("close_warn", `Position not found in status=closed (attempt ${attempt + 1}/${SETTLE_DELAYS.length}) — still settling`);
           }
+        } catch (e) {
+          log("close_warn", `Closed PnL fetch failed (attempt ${attempt + 1}): ${e.message}`);
         }
-      } catch (e) {
-        log("close_warn", `Closed PnL fetch failed: ${e.message}`);
       }
       // Fallback to pre-close cache snapshot if closed API had no data
       if (finalValueUsd === 0) {
