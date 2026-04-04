@@ -145,7 +145,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       const ACTION_INTENTS = /\b(deploy|open|add liquidity|close|exit|withdraw|claim|swap|block|unblock)\b/i;
       const toolChoice = (step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) ? "required" : "auto";
 
-      let effectiveToolChoice = agentType === "SCREENER" ? "auto" : toolChoice;
+      let effectiveToolChoice = toolChoice;
       // log("agent", `${maxOutputTokens} - ${config.llm.maxTokens} - ${toolChoice} - ${mustUseRealTool}`)
       for (let attempt = 0; attempt < 3; attempt++) {
         const body = {
@@ -157,7 +157,29 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
           max_tokens: maxOutputTokens ?? config.llm.maxTokens,
         }
         // log('agent', JSON.stringify(body))
-        response = await client.chat.completions.create(body);
+        try {
+          response = await client.chat.completions.create(body);
+        } catch (apiErr) {
+          const status = apiErr.status ?? apiErr.code;
+          const msg = apiErr.message || "";
+          if ((status === 404 || msg.includes("tool_choice") || msg.includes("No endpoints found")) && effectiveToolChoice !== "auto") {
+            log("agent", `Model ${usedModel} does not support tool_choice, retrying with 'auto'`);
+            effectiveToolChoice = "auto";
+            continue;
+          }
+          if (status === 502 || status === 503 || status === 529) {
+            const wait = (attempt + 1) * 5000;
+            if (attempt === 1 && usedModel !== FALLBACK_MODEL) {
+              usedModel = FALLBACK_MODEL;
+              log("agent", `Switching to fallback model ${FALLBACK_MODEL}`);
+            } else {
+              log("agent", `Provider error ${status}, retrying in ${wait / 1000}s (attempt ${attempt + 1}/3)`);
+              await new Promise((r) => setTimeout(r, wait));
+            }
+            continue;
+          }
+          throw apiErr;
+        }
         if (response.choices?.length) break;
         const errCode = response.error?.code;
         if (errCode === 404 || response.error?.message?.includes("tool_choice")) {

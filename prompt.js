@@ -121,6 +121,26 @@ NARRATIVE QUALITY (your main judgment call):
 
 POOL MEMORY: Past losses or problems → strong skip signal.
 
+TIMEFRAME SCALING — fee_active_tvl_ratio is measured over the active timeframe window:
+  timeframe │ fee_active_tvl_ratio │ volume (good pool)
+  ──────────┼─────────────────────┼────────────────────
+  5m        │ ≥ 0.02% = decent    │ ≥ $500
+  15m       │ ≥ 0.05% = decent    │ ≥ $2k
+  1h        │ ≥ 0.2%  = decent    │ ≥ $10k
+  2h        │ ≥ 0.4%  = decent    │ ≥ $20k
+  4h        │ ≥ 0.8%  = decent    │ ≥ $40k
+  24h       │ ≥ 3%    = decent    │ ≥ $100k
+Current timeframe: ${config.screening.timeframe}
+IMPORTANT: fee_active_tvl_ratio values are ALREADY in percentage form. 0.29 = 0.29%. Do NOT multiply by 100.
+
+TOKEN TAGS (from OKX advanced-info):
+- dev_sold_all = BULLISH — dev has no tokens left to dump on you
+- dev_buying_more = BULLISH — dev is accumulating
+- smart_money_buy = BULLISH — smart money actively buying
+- dex_boost / dex_screener_paid = NEUTRAL/CAUTION — paid promotion, may inflate visibility
+- is_honeypot = HARD SKIP
+- low_liquidity = CAUTION
+
 DEPLOY RULES:
 - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT default to a smaller number.
 - bins_below = round(35 + (volatility/5)*55) clamped to [35,90]. bins_above = 0.
