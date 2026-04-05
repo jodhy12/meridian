@@ -312,6 +312,7 @@ async function fetchLpAgentOpenPositions(walletAddress) {
       const addr = p.position || p.id || p.tokenId;
       if (addr) byAddress[addr] = p;
     }
+    log("lpagent_api", `LPAgent active — ${positions.length} position(s) loaded (PnL/fees/value from LPAgent, range/OOR from Meteora)`);
     return byAddress;
   } catch (e) {
     log("lpagent_api", `Fetch error for owner ${walletAddress.slice(0, 8)}: ${e.message}`);
