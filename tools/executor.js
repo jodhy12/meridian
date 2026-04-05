@@ -12,7 +12,7 @@ import {
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
-import { setPositionInstruction } from "../state.js";
+import { setPositionInstruction, resetPeakAfterClaim } from "../state.js";
 
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
@@ -325,16 +325,31 @@ export async function executeTool(name, args) {
             log("executor_warn", `Auto-swap after close failed: ${e.message}`);
           }
         }
-      } else if (name === "claim_fees" && config.management.autoSwapAfterClaim && result.base_mint) {
-        try {
-          const balances = await getWalletBalances({});
-          const token = balances.tokens?.find(t => t.mint === result.base_mint);
-          if (token && token.usd >= 0.10) {
-            log("executor", `Auto-swapping claimed ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL`);
-            await swapToken({ input_mint: result.base_mint, output_mint: "SOL", amount: token.balance });
+      } else if (name === "claim_fees") {
+        // Reset trailing TP peak after claim — claim reduces position value so pnl_pct drops,
+        // making the old peak stale and potentially triggering a false trailing TP close.
+        const claimedPosition = toolArgs?.position_address;
+        if (claimedPosition) {
+          try {
+            const positions = await getMyPositions({ force: true, silent: true }).catch(() => null);
+            const pos = positions?.positions?.find(p => p.position === claimedPosition);
+            resetPeakAfterClaim(claimedPosition, pos?.pnl_pct ?? 0);
+          } catch (e) {
+            resetPeakAfterClaim(claimedPosition, 0);
           }
-        } catch (e) {
-          log("executor_warn", `Auto-swap after claim failed: ${e.message}`);
+        }
+
+        if (config.management.autoSwapAfterClaim && result.base_mint) {
+          try {
+            const balances = await getWalletBalances({});
+            const token = balances.tokens?.find(t => t.mint === result.base_mint);
+            if (token && token.usd >= 0.10) {
+              log("executor", `Auto-swapping claimed ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL`);
+              await swapToken({ input_mint: result.base_mint, output_mint: "SOL", amount: token.balance });
+            }
+          } catch (e) {
+            log("executor_warn", `Auto-swap after claim failed: ${e.message}`);
+          }
         }
       }
     }

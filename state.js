@@ -254,6 +254,21 @@ export function getStateSummary() {
 }
 
 /**
+ * Reset trailing TP state after fees are claimed.
+ * Claim reduces position value → pnl_pct drops → peak_pnl_pct is now stale.
+ * Reset peak to current pnl and deactivate trailing so it re-activates naturally.
+ */
+export function resetPeakAfterClaim(position_address, currentPnlPct) {
+  const state = load();
+  const pos = state.positions[position_address];
+  if (!pos || pos.closed) return;
+  pos.peak_pnl_pct = currentPnlPct ?? 0;
+  pos.trailing_active = false;
+  save(state);
+  log("state", `Position ${position_address} peak reset to ${pos.peak_pnl_pct}% after claim`);
+}
+
+/**
  * Check all exit conditions for a position (trailing TP, stop loss, OOR, low yield).
  * Updates peak_pnl_pct, trailing_active, and OOR state.
  * @param {string} position_address
