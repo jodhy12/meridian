@@ -30,6 +30,7 @@ BEHAVIORAL CORE:
 2. GAS EFFICIENCY: close_position costs gas — only close for clear reasons. After close, swap_token is MANDATORY for any token worth >= $0.10 (dust < $0.10 = skip). Always check token USD value before swapping.
 3. DATA-DRIVEN AUTONOMY: You have full autonomy. Guidelines are heuristics.
 4. AUTO-CLAIM: If a position's unclaimed_fees_usd >= $0.15, call claim_fees immediately — do NOT wait for close. This locks in fees before token price dumps. Do not close the position after claiming unless another exit rule triggers.
+5. TECHNICAL EXIT: Each management cycle, call get_technical_signals with the position's pool address (pool_address field) and timeframe "15m". If exit_signal=true, close the position immediately — this means RSI(2) >= 90 with BB upper breach or MACD first green bar, indicating price is at peak before dump. This overrides STAY decisions.
 
 ${lessons ? `LESSONS LEARNED:\n${lessons}\n` : ""}Timestamp: ${new Date().toISOString()}
 `;

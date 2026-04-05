@@ -1072,4 +1072,36 @@ Blacklisted tokens are filtered BEFORE the LLM even sees pool candidates.`,
       }
     }
   },
+
+  {
+    type: "function",
+    function: {
+      name: "get_technical_signals",
+      description: `Fetch OHLCV candles from DexScreener and compute RSI(2), Bollinger Bands(20), and MACD(12/26/9) for a token pair.
+
+Returns exit_signal=true when Evil Panda exit criteria are met (confluence of 2 signals):
+- Signal 1: RSI(2) >= 90 AND price above BB upper band
+- Signal 2: RSI(2) >= 90 AND MACD first green histogram bar
+
+Use this tool during MANAGER cycle to check if price has reached overbought levels.
+If exit_signal=true, close the position immediately to lock in gains before the dump.
+
+Requires the DexScreener pair address (not the pool address — use the pair address from pool data).`,
+      parameters: {
+        type: "object",
+        properties: {
+          pool_address: {
+            type: "string",
+            description: "Meteora pool address (same address used in deploy_position)"
+          },
+          timeframe: {
+            type: "string",
+            description: "Candle timeframe: '1m', '5m', '15m', '1h', '4h'. Default: '15m'",
+            enum: ["1m", "5m", "15m", "1h", "4h"]
+          }
+        },
+        required: []
+      }
+    }
+  },
 ];
