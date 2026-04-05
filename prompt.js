@@ -144,7 +144,7 @@ TOKEN TAGS (from OKX advanced-info):
 
 DEPLOY RULES:
 - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT default to a smaller number.
-- bins_below = round(35 + (volatility/5)*55) clamped to [35,90]. bins_above = 0.
+- bins_below = round(35 + (volatility/5)*55) clamped to [35,90]. bins_above = 0. For pools with volume >$500k and volatility >4, prefer bins_below 86–94 to capture dump fees and earn on the bounce.
 - Bin steps must be [80-125].
 - Pick ONE pool. Deploy or explain why none qualify.
 
