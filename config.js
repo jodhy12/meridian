@@ -51,6 +51,7 @@ export const config = {
     minTokenAgeHours:   u.minTokenAgeHours   ?? null, // null = no minimum
     maxTokenAgeHours:   u.maxTokenAgeHours   ?? null, // null = no maximum
     athFilterPct:       u.athFilterPct       ?? null, // e.g. -20 = only deploy if price is >= 20% below ATH
+    solOnlyPairs:       u.solOnlyPairs       ?? true, // only consider pools with SOL as quote token
   },
 
   // ─── Position Management ────────────────
@@ -175,5 +176,6 @@ export function reloadScreeningThresholds() {
     if (fresh.maxBotHoldersPct  != null) s.maxBotHoldersPct = fresh.maxBotHoldersPct;
     if (fresh.allowedLaunchpads !== undefined) s.allowedLaunchpads = fresh.allowedLaunchpads;
     if (fresh.blockedLaunchpads !== undefined) s.blockedLaunchpads = fresh.blockedLaunchpads;
+    if (fresh.solOnlyPairs      !== undefined) s.solOnlyPairs      = fresh.solOnlyPairs;
   } catch { /* ignore */ }
 }

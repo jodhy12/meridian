@@ -138,8 +138,20 @@ export async function discoverPools({
 
   const condensed = (data.data || []).map(condensePool);
 
+  // SOL-only filter — drop non-SOL quote pairs (e.g. TOKEN-USDC, TOKEN-USDT)
+  const SOL_MINT = "So11111111111111111111111111111111111111112";
+  const preFiltered = s.solOnlyPairs
+    ? condensed.filter((p) => {
+        if (p.quote?.mint !== SOL_MINT) {
+          log("screening", `SOL-only filter: dropped ${p.name} (quote: ${p.quote?.symbol})`);
+          return false;
+        }
+        return true;
+      })
+    : condensed;
+
   // Hard-filter blacklisted tokens and blocked deployers (what pool discovery already gave us)
-  let pools = condensed.filter((p) => {
+  let pools = preFiltered.filter((p) => {
     if (isBlacklisted(p.base?.mint)) {
       log("blacklist", `Filtered blacklisted token ${p.base?.symbol} (${p.base?.mint?.slice(0, 8)}) in pool ${p.name}`);
       return false;
@@ -151,7 +163,7 @@ export async function discoverPools({
     return true;
   });
 
-  const filtered = condensed.length - pools.length;
+  const filtered = preFiltered.length - pools.length;
   if (filtered > 0) log("blacklist", `Filtered ${filtered} pool(s) with blacklisted tokens/devs`);
 
   // If pool discovery didn't supply dev field, batch-fetch from Jupiter for any pools
