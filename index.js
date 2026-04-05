@@ -191,11 +191,24 @@ export async function runManagementCycle({ silent = false } = {}) {
         actionMap.set(p.position, { action: "CLOSE", rule: 3, reason: "pumped far above range" });
         continue;
       }
+      // Rule 3b: dumped far below range
+      if (p.active_bin != null && p.lower_bin != null &&
+          p.active_bin < p.lower_bin - config.management.outOfRangeBinsToClose) {
+        actionMap.set(p.position, { action: "CLOSE", rule: "3b", reason: "dumped far below range" });
+        continue;
+      }
       // Rule 4: stale above range
       if (p.active_bin != null && p.upper_bin != null &&
           p.active_bin > p.upper_bin &&
           (p.minutes_out_of_range ?? 0) >= config.management.outOfRangeWaitMinutes) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 4, reason: "OOR" });
+        actionMap.set(p.position, { action: "CLOSE", rule: 4, reason: "OOR above" });
+        continue;
+      }
+      // Rule 4b: stale below range
+      if (p.active_bin != null && p.lower_bin != null &&
+          p.active_bin < p.lower_bin &&
+          (p.minutes_out_of_range ?? 0) >= config.management.outOfRangeWaitMinutes) {
+        actionMap.set(p.position, { action: "CLOSE", rule: "4b", reason: "OOR below" });
         continue;
       }
       // Rule 5: fee yield too low
