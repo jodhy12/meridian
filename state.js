@@ -347,7 +347,7 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     fee_per_tvl_24h != null &&
     mgmtConfig.minFeePerTvl24h != null &&
     fee_per_tvl_24h < mgmtConfig.minFeePerTvl24h &&
-    (age_minutes == null || age_minutes >= minAgeForYieldCheck)
+    age_minutes != null && age_minutes >= minAgeForYieldCheck
   ) {
     return {
       action: "LOW_YIELD",

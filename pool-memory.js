@@ -99,11 +99,15 @@ export function recordPoolDeploy(poolAddress, deployData) {
     entry.base_mint = deployData.base_mint;
   }
 
-  // Set cooldown for low yield closes — pool wasn't profitable enough, don't redeploy soon
-  if (deploy.close_reason === "low yield") {
-    const cooldownHours = 4;
+  // Set cooldown based on close reason
+  const reason = (deploy.close_reason || "").toLowerCase();
+  let cooldownHours = 0;
+  if (reason.includes("low yield"))   cooldownHours = 4;
+  if (reason.includes("stop loss"))   cooldownHours = 8;
+  if (reason.includes("oor") || reason.includes("out of range")) cooldownHours = 2;
+  if (cooldownHours > 0) {
     entry.cooldown_until = new Date(Date.now() + cooldownHours * 60 * 60 * 1000).toISOString();
-    log("pool-memory", `Cooldown set for ${entry.name} until ${entry.cooldown_until} (low yield close)`);
+    log("pool-memory", `Cooldown set for ${entry.name} until ${entry.cooldown_until} (${cooldownHours}h — ${deploy.close_reason?.slice(0, 50)})`);
   }
 
   save(db);

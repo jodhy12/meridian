@@ -219,8 +219,17 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   const occupiedPools = new Set(positions.map((p) => p.pool));
   const occupiedMints = new Set(positions.map((p) => p.base_mint).filter(Boolean));
 
+  const { isPoolOnCooldown } = await import("../pool-memory.js");
   const eligible = pools
-    .filter((p) => !occupiedPools.has(p.pool) && !occupiedMints.has(p.base?.mint))
+    .filter((p) => {
+      if (occupiedPools.has(p.pool)) return false;
+      if (occupiedMints.has(p.base?.mint)) return false;
+      if (isPoolOnCooldown(p.pool)) {
+        log("screening", `Cooldown: skipping ${p.name} (recently closed)`);
+        return false;
+      }
+      return true;
+    })
     .slice(0, limit);
 
   if (config.screening.avoidPvpSymbols && eligible.length > 0) {
