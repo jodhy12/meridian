@@ -105,6 +105,7 @@ export function recordPoolDeploy(poolAddress, deployData) {
   if (reason.includes("low yield"))   cooldownHours = 4;
   if (reason.includes("stop loss"))   cooldownHours = 8;
   if (reason.includes("oor") || reason.includes("out of range")) cooldownHours = 2;
+  if (reason.includes("pumped") || reason.includes("above range")) cooldownHours = 6;
   if (cooldownHours > 0) {
     entry.cooldown_until = new Date(Date.now() + cooldownHours * 60 * 60 * 1000).toISOString();
     log("pool-memory", `Cooldown set for ${entry.name} until ${entry.cooldown_until} (${cooldownHours}h — ${deploy.close_reason?.slice(0, 50)})`);
