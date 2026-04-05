@@ -853,7 +853,7 @@ export async function closePosition({ position_address, reason }) {
       let initialUsd = 0;
       let feesUsd = tracked.total_fees_claimed_usd || 0;
       const closedUrl = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${wallet.publicKey.toString()}&status=closed&pageSize=50&page=1`;
-      const SETTLE_DELAYS = [5000, 10000, 15000, 20000]; // ms between retries
+      const SETTLE_DELAYS = [5000, 10000, 15000, 20000, 30000]; // ms between retries
       for (let attempt = 0; attempt < SETTLE_DELAYS.length; attempt++) {
         await new Promise(r => setTimeout(r, SETTLE_DELAYS[attempt]));
         try {
