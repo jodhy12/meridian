@@ -9,6 +9,7 @@
  */
 
 import { log } from "../logger.js";
+import { notifyTechnicalSignal, isEnabled as telegramEnabled } from "../telegram.js";
 
 const GECKOTERMINAL_BASE = "https://api.geckoterminal.com/api/v2";
 
@@ -184,6 +185,22 @@ export async function getTechnicalSignals({ pool_address, timeframe = "15m" }) {
   const exitSignal = signal1 || signal2;
 
   log("ohlcv", `${pool_address} [${timeframe}] RSI=${rsiVal} BB_upper=${bb?.upper} close=${currentClose} MACD_green=${macdFirstGreen} → exit=${exitSignal}`);
+
+  if (exitSignal && telegramEnabled()) {
+    notifyTechnicalSignal({
+      pair: pool_address.slice(0, 8) + "...",
+      timeframe,
+      rsi2: rsiVal,
+      bbUpper: bb?.upper,
+      currentClose,
+      macdGreen: macdFirstGreen,
+      exitReason: exitSignal
+        ? signal1
+          ? "RSI(2) >= 90 + Price above BB upper — close position"
+          : "RSI(2) >= 90 + MACD first green bar — close position"
+        : null,
+    }).catch(() => {});
+  }
 
   return {
     pool_address,

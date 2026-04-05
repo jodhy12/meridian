@@ -158,6 +158,9 @@ function summarizeToolResult(name, result) {
     case "study_top_lpers":
     case "get_top_lpers":
       return `${result.lpers?.length ?? 0} LPers`;
+    case "get_technical_signals":
+      if (result.error) return result.error;
+      return `RSI=${result.indicators?.rsi2?.toFixed(1) ?? "?"} | exit=${result.exit_signal ? "⚡YES" : "no"}`;
     default:
       return result.success === false ? "failed" : "done";
   }
@@ -334,6 +337,16 @@ export async function notifyClose({ pair, pnlUsd, pnlPct }) {
   await sendHTML(
     `🔒 <b>Closed</b> ${pair}\n` +
     `PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${sign}${(pnlPct ?? 0).toFixed(2)}%)`
+  );
+}
+
+export async function notifyTechnicalSignal({ pair, timeframe, rsi2, bbUpper, currentClose, macdGreen, exitReason }) {
+  if (hasActiveLiveMessage()) return;
+  await sendHTML(
+    `📊 <b>Technical Signal</b> ${pair} [${timeframe}]\n` +
+    `RSI(2): <b>${rsi2?.toFixed(1) ?? "?"}</b> | BB Upper: ${bbUpper?.toFixed(8) ?? "?"}\n` +
+    `Close: ${currentClose?.toFixed(8) ?? "?"} | MACD Green: ${macdGreen ? "✅" : "❌"}\n` +
+    `⚡ <b>${exitReason}</b>`
   );
 }
 
