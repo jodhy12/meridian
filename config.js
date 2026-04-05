@@ -52,6 +52,11 @@ export const config = {
     maxTokenAgeHours:   u.maxTokenAgeHours   ?? null, // null = no maximum
     athFilterPct:       u.athFilterPct       ?? null, // e.g. -20 = only deploy if price is >= 20% below ATH
     solOnlyPairs:       u.solOnlyPairs       ?? true, // only consider pools with SOL as quote token
+    // Quality post-filter (applied after API, before LLM sees candidates)
+    qualityMinOrganic:  u.qualityMinOrganic  ?? 70,
+    qualityMinHolders:  u.qualityMinHolders  ?? 500,
+    qualityMinFeeRatio: u.qualityMinFeeRatio ?? 0.5,
+    qualityTopN:        u.qualityTopN        ?? 5,
   },
 
   // ─── Position Management ────────────────

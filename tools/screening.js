@@ -220,17 +220,36 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   const occupiedMints = new Set(positions.map((p) => p.base_mint).filter(Boolean));
 
   const { isPoolOnCooldown } = await import("../pool-memory.js");
-  const eligible = pools
-    .filter((p) => {
-      if (occupiedPools.has(p.pool)) return false;
-      if (occupiedMints.has(p.base?.mint)) return false;
-      if (isPoolOnCooldown(p.pool)) {
-        log("screening", `Cooldown: skipping ${p.name} (recently closed)`);
-        return false;
-      }
-      return true;
-    })
-    .slice(0, limit);
+
+  // Quality hard-filter — applied after API, before LLM sees candidates
+  // API uses loose thresholds to maximize discovery; this enforces the real quality bar
+  const qs = config.screening;
+  const qualityFiltered = pools.filter((p) => {
+    if (occupiedPools.has(p.pool)) return false;
+    if (occupiedMints.has(p.base?.mint)) return false;
+    if (isPoolOnCooldown(p.pool)) {
+      log("screening", `Cooldown: skipping ${p.name} (recently closed)`);
+      return false;
+    }
+    if ((p.base?.organic ?? 0) < qs.qualityMinOrganic) {
+      log("screening", `Quality filter: dropped ${p.name} — organic ${p.base?.organic} < ${qs.qualityMinOrganic}`);
+      return false;
+    }
+    if ((p.holders ?? 0) < qs.qualityMinHolders) {
+      log("screening", `Quality filter: dropped ${p.name} — holders ${p.holders} < ${qs.qualityMinHolders}`);
+      return false;
+    }
+    if ((p.fee_active_tvl_ratio ?? 0) < qs.qualityMinFeeRatio) {
+      log("screening", `Quality filter: dropped ${p.name} — fee/tvl ${p.fee_active_tvl_ratio} < ${qs.qualityMinFeeRatio}`);
+      return false;
+    }
+    return true;
+  });
+
+  // Score and take top N
+  const eligible = qualityFiltered
+    .sort((a, b) => scoreCandidate(b) - scoreCandidate(a))
+    .slice(0, qs.qualityTopN ?? limit);
 
   if (config.screening.avoidPvpSymbols && eligible.length > 0) {
     await enrichPvpRisk(eligible);
