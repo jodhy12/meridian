@@ -160,7 +160,7 @@ function summarizeToolResult(name, result) {
       return `${result.lpers?.length ?? 0} LPers`;
     case "get_technical_signals":
       if (result.error) return result.error;
-      return `RSI=${result.indicators?.rsi2?.toFixed(1) ?? "?"} | exit=${result.exit_signal ? "⚡YES" : "no"}`;
+      return `RSI=${result.indicators?.rsi2?.toFixed(1) ?? "?"} ST=${result.indicators?.supertrend?.direction ?? "?"} | exit=${result.exit_signal ? "⚡YES" : "no"} entry=${result.entry_ok ? "✅" : "⚠️"}`;
     default:
       return result.success === false ? "failed" : "done";
   }
