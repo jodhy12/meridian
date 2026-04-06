@@ -129,8 +129,19 @@ export function isPoolOnCooldown(poolAddress) {
   if (!poolAddress) return false;
   const db = load();
   const entry = db[poolAddress];
-  if (!entry?.cooldown_until) return false;
-  return new Date(entry.cooldown_until) > new Date();
+  if (!entry) return false;
+
+  // Hard block 1: explicit cooldown timer
+  if (entry.cooldown_until && new Date(entry.cooldown_until) > new Date()) return true;
+
+  // Hard block 2: chronic underperformer — 5+ deploys with avg PnL < -0.5%
+  // LLM cannot override this regardless of current metrics
+  if (entry.total_deploys >= 5 && entry.avg_pnl_pct < -0.5) {
+    log("pool-memory", `Hard block: ${entry.name} is a chronic underperformer (${entry.total_deploys} deploys, avg PnL ${entry.avg_pnl_pct}%) — skipping`);
+    return true;
+  }
+
+  return false;
 }
 
 // ─── Read ──────────────────────────────────────────────────────
