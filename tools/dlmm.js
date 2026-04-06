@@ -896,6 +896,19 @@ export async function closePosition({ position_address, reason }) {
         }
       }
 
+      // Bug fix: stop loss PnL misleading on rug/collapse events.
+      // Meteora API includes SOL residual from auto-swap, making pnl_pct look small.
+      // If stop loss AND pnl_pct suspiciously small, override with raw withdrawal delta.
+      const isStopLoss = (reason || "").toLowerCase().includes("stop loss");
+      if (isStopLoss && Math.abs(pnlPct) < 10 && initialUsd > 0 && finalValueUsd > 0) {
+        const impliedDrop = ((finalValueUsd - initialUsd) / initialUsd) * 100;
+        if (impliedDrop < -10) {
+          log("close_warn", `Stop loss PnL override: API=${pnlPct.toFixed(2)}% but implied=${impliedDrop.toFixed(2)}% — using implied drop`);
+          pnlPct = impliedDrop;
+          pnlUsd = (impliedDrop / 100) * initialUsd;
+        }
+      }
+
       await recordPerformance({
         position: position_address,
         pool: poolAddress,

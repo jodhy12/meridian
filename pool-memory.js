@@ -106,6 +106,16 @@ export function recordPoolDeploy(poolAddress, deployData) {
   if (reason.includes("stop loss"))   cooldownHours = 8;
   if (reason.includes("oor") || reason.includes("out of range")) cooldownHours = 2;
   if (reason.includes("pumped") || reason.includes("above range")) cooldownHours = 2;
+
+  // L24: 3 consecutive losses = extended 7-day cooldown
+  const recentDeploys = entry.deploys.slice(-3);
+  const consecutiveLosses = recentDeploys.length === 3 &&
+    recentDeploys.every((d) => (d.pnl_pct ?? 0) < 0);
+  if (consecutiveLosses) {
+    cooldownHours = 168; // 7 days
+    log("pool-memory", `⚠️ ${entry.name} — 3 consecutive losses detected, extended cooldown 7 days`);
+  }
+
   if (cooldownHours > 0) {
     entry.cooldown_until = new Date(Date.now() + cooldownHours * 60 * 60 * 1000).toISOString();
     log("pool-memory", `Cooldown set for ${entry.name} until ${entry.cooldown_until} (${cooldownHours}h — ${deploy.close_reason?.slice(0, 50)})`);
@@ -143,6 +153,11 @@ export function getPoolMemory({ pool_address }) {
     };
   }
 
+  // Detect consecutive losses for LLM context
+  const recentDeploys = entry.deploys.slice(-3);
+  const consecutiveLosses = recentDeploys.length === 3 &&
+    recentDeploys.every((d) => (d.pnl_pct ?? 0) < 0);
+
   return {
     pool_address,
     known: true,
@@ -153,6 +168,8 @@ export function getPoolMemory({ pool_address }) {
     win_rate: entry.win_rate,
     last_deployed_at: entry.last_deployed_at,
     last_outcome: entry.last_outcome,
+    consecutive_losses: consecutiveLosses ? 3 : null,
+    cooldown_until: entry.cooldown_until || null,
     notes: entry.notes,
     history: entry.deploys.slice(-10), // last 10 deploys
   };
