@@ -18,41 +18,82 @@ export async function discoverPools({
   page_size = 50,
 } = {}) {
   const s = config.screening;
-  const filters = [
+
+  // Base filters applied to all categories
+  const baseFilters = [
     "base_token_has_critical_warnings=false",
     "quote_token_has_critical_warnings=false",
     "base_token_has_high_single_ownership=false",
     "pool_type=dlmm",
-    `base_token_market_cap>=${s.minMcap}`,
     `base_token_market_cap<=${s.maxMcap}`,
-    `base_token_holders>=${s.minHolders}`,
-    `volume>=${s.minVolume}`,
-    `tvl>=${s.minTvl}`,
     `tvl<=${s.maxTvl}`,
     `dlmm_bin_step>=${s.minBinStep}`,
     `dlmm_bin_step<=${s.maxBinStep}`,
+    s.minTokenAgeHours != null ? `base_token_created_at<=${Date.now() - s.minTokenAgeHours * 3_600_000}` : null,
+    s.maxTokenAgeHours != null ? `base_token_created_at>=${Date.now() - s.maxTokenAgeHours * 3_600_000}` : null,
+  ].filter(Boolean);
+
+  // Strict filters — only for trending (established pools)
+  const strictFilters = [
+    ...baseFilters,
+    `base_token_market_cap>=${s.minMcap}`,
+    `base_token_holders>=${s.minHolders}`,
+    `volume>=${s.minVolume}`,
+    `tvl>=${s.minTvl}`,
     `fee_active_tvl_ratio>=${s.minFeeActiveTvlRatio}`,
     `base_token_organic_score>=${s.minOrganic}`,
     "quote_token_organic_score>=60",
-    s.minTokenAgeHours != null ? `base_token_created_at<=${Date.now() - s.minTokenAgeHours * 3_600_000}` : null,
-    s.maxTokenAgeHours != null ? `base_token_created_at>=${Date.now() - s.maxTokenAgeHours * 3_600_000}` : null,
-  ].filter(Boolean).join("&&");
+  ].join("&&");
 
-  const url = `${POOL_DISCOVERY_BASE}/pools?` +
-    `page_size=${page_size}` +
-    `&filter_by=${encodeURIComponent(filters)}` +
-    `&timeframe=${s.timeframe}` +
-    `&category=${s.category}`;
+  // Loose filters — for "new" category (early pools, low volume ok)
+  const looseFilters = [
+    ...baseFilters,
+    `base_token_holders>=50`,
+    `tvl>=500`,
+    `fee_active_tvl_ratio>=0.02`,
+  ].join("&&");
 
-  const res = await fetch(url);
+  // Scan multiple categories in parallel
+  const categories = [
+    { category: s.category || "trending", filters: strictFilters },
+    { category: "new", filters: looseFilters },
+  ];
 
-  if (!res.ok) {
-    throw new Error(`Pool Discovery API error: ${res.status} ${res.statusText}`);
+  const results = await Promise.allSettled(
+    categories.map(({ category, filters }) => {
+      const url = `${POOL_DISCOVERY_BASE}/pools?` +
+        `page_size=${page_size}` +
+        `&filter_by=${encodeURIComponent(filters)}` +
+        `&timeframe=${s.timeframe}` +
+        `&category=${category}`;
+      return fetch(url).then((res) => {
+        if (!res.ok) throw new Error(`Pool Discovery API error (${category}): ${res.status}`);
+        return res.json();
+      }).then((data) => ({ category, pools: data.data || [] }));
+    })
+  );
+
+  // Merge — deduplicate by pool address
+  const seen = new Set();
+  const allPools = [];
+  for (const r of results) {
+    if (r.status !== "fulfilled") {
+      log("screening", `Category fetch failed: ${r.reason?.message}`);
+      continue;
+    }
+    const { category, pools } = r.value;
+    for (const p of pools) {
+      if (!seen.has(p.pool_address)) {
+        seen.add(p.pool_address);
+        p._source_category = category; // tag for logging
+        allPools.push(p);
+      }
+    }
   }
 
-  const data = await res.json();
+  log("screening", `Discovered ${allPools.length} unique pools across ${categories.map(c => c.category).join("+")} categories`);
 
-  const condensed = (data.data || []).map(condensePool);
+  const condensed = allPools.map(condensePool);
 
   // Hard-filter blacklisted tokens and blocked deployers (what pool discovery already gave us)
   let pools = condensed.filter((p) => {
