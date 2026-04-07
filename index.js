@@ -11,13 +11,11 @@ import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled, createLiveMessage } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits } from "./state.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
 import { getActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { checkSmartWalletsOnPool } from "./smart-wallets.js";
 import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
-import { stageSignals } from "./signal-tracker.js";
-import { getWeightsSummary } from "./signal-weights.js";
 
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
@@ -61,11 +59,71 @@ let _managementBusy = false; // prevents overlapping management cycles
 let _screeningBusy = false;  // prevents overlapping screening cycles
 let _screeningLastTriggered = 0; // epoch ms — prevents management from spamming screening
 let _pollTriggeredAt = 0; // epoch ms — cooldown for poller-triggered management
+const _peakConfirmTimers = new Map();
+const _trailingDropConfirmTimers = new Map();
+const TRAILING_PEAK_CONFIRM_DELAY_MS = 15_000;
+const TRAILING_PEAK_CONFIRM_TOLERANCE = 0.85;
+const TRAILING_DROP_CONFIRM_DELAY_MS = 15_000;
+const TRAILING_DROP_CONFIRM_TOLERANCE_PCT = 1.0;
 
 /** Strip <think>...</think> reasoning blocks that some models leak into output */
 function stripThink(text) {
   if (!text) return text;
   return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+}
+
+function sanitizeUntrustedPromptText(text, maxLen = 500) {
+  if (!text) return null;
+  const cleaned = String(text)
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/[<>`]/g, "")
+    .trim()
+    .slice(0, maxLen);
+  return cleaned ? JSON.stringify(cleaned) : null;
+}
+
+function schedulePeakConfirmation(positionAddress) {
+  if (!positionAddress || _peakConfirmTimers.has(positionAddress)) return;
+
+  const timer = setTimeout(async () => {
+    _peakConfirmTimers.delete(positionAddress);
+    try {
+      const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
+      const position = result?.positions?.find((p) => p.position === positionAddress);
+      resolvePendingPeak(positionAddress, position?.pnl_pct ?? null, TRAILING_PEAK_CONFIRM_TOLERANCE);
+    } catch (error) {
+      log("state_warn", `Peak confirmation failed for ${positionAddress}: ${error.message}`);
+    }
+  }, TRAILING_PEAK_CONFIRM_DELAY_MS);
+
+  _peakConfirmTimers.set(positionAddress, timer);
+}
+
+function scheduleTrailingDropConfirmation(positionAddress) {
+  if (!positionAddress || _trailingDropConfirmTimers.has(positionAddress)) return;
+
+  const timer = setTimeout(async () => {
+    _trailingDropConfirmTimers.delete(positionAddress);
+    try {
+      const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
+      const position = result?.positions?.find((p) => p.position === positionAddress);
+      const resolved = resolvePendingTrailingDrop(
+        positionAddress,
+        position?.pnl_pct ?? null,
+        config.management.trailingDropPct,
+        TRAILING_DROP_CONFIRM_TOLERANCE_PCT,
+      );
+      if (resolved?.confirmed) {
+        log("state", `[Trailing recheck] Confirmed trailing exit for ${positionAddress} — triggering management`);
+        runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Trailing recheck management failed: ${e.message}`));
+      }
+    } catch (error) {
+      log("state_warn", `Trailing drop confirmation failed for ${positionAddress}: ${error.message}`);
+    }
+  }, TRAILING_DROP_CONFIRM_DELAY_MS);
+
+  _trailingDropConfirmTimers.set(positionAddress, timer);
 }
 
 async function runBriefing() {
@@ -139,8 +197,17 @@ export async function runManagementCycle({ silent = false } = {}) {
     // JS trailing TP check
     const exitMap = new Map();
     for (const p of positionData) {
+      if (!p.pnl_pct_suspicious && queuePeakConfirmation(p.position, p.pnl_pct)) {
+        schedulePeakConfirmation(p.position);
+      }
       const exit = updatePnlAndCheckExits(p.position, p, config.management);
       if (exit) {
+        if (exit.action === "TRAILING_TP" && exit.needs_confirmation) {
+          if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
+            scheduleTrailingDropConfirmation(p.position);
+          }
+          continue;
+        }
         exitMap.set(p.position, exit.reason);
         log("state", `Exit alert for ${p.pair}: ${exit.reason}`);
       }
@@ -191,24 +258,11 @@ export async function runManagementCycle({ silent = false } = {}) {
         actionMap.set(p.position, { action: "CLOSE", rule: 3, reason: "pumped far above range" });
         continue;
       }
-      // Rule 3b: dumped far below range
-      if (p.active_bin != null && p.lower_bin != null &&
-          p.active_bin < p.lower_bin - config.management.outOfRangeBinsToClose) {
-        actionMap.set(p.position, { action: "CLOSE", rule: "3b", reason: "dumped far below range" });
-        continue;
-      }
       // Rule 4: stale above range
       if (p.active_bin != null && p.upper_bin != null &&
           p.active_bin > p.upper_bin &&
           (p.minutes_out_of_range ?? 0) >= config.management.outOfRangeWaitMinutes) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 4, reason: "OOR above" });
-        continue;
-      }
-      // Rule 4b: stale below range
-      if (p.active_bin != null && p.lower_bin != null &&
-          p.active_bin < p.lower_bin &&
-          (p.minutes_out_of_range ?? 0) >= config.management.outOfRangeWaitMinutes) {
-        actionMap.set(p.position, { action: "CLOSE", rule: "4b", reason: "OOR below" });
+        actionMap.set(p.position, { action: "CLOSE", rule: 4, reason: "OOR" });
         continue;
       }
       // Rule 5: fee yield too low
@@ -346,7 +400,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
       return screenReport;
     }
     const minRequired = config.management.deployAmountSol + config.management.gasReserve;
-    if (preBalance.sol < minRequired) {
+    const isDryRun = process.env.DRY_RUN === "true";
+    if (!isDryRun && preBalance.sol < minRequired) {
       log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
       screenReport = `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas).`;
       _screeningBusy = false;
@@ -378,6 +433,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     // Fetch top candidates, then recon each sequentially with a small delay to avoid 429s
     const topCandidates = await getTopCandidates({ limit: 10 }).catch(() => null);
     const candidates = (topCandidates?.candidates || topCandidates?.pools || []).slice(0, 10);
+    const earlyFilteredExamples = topCandidates?.filtered_examples || [];
 
     const allCandidates = [];
     for (const pool of candidates) {
@@ -398,27 +454,40 @@ export async function runScreeningCycle({ silent = false } = {}) {
     }
 
     // Hard filters after token recon — block launchpads and excessive Jupiter bot holders
+    const filteredOut = [];
     const passing = allCandidates.filter(({ pool, ti }) => {
       const launchpad = ti?.launchpad ?? null;
       if (launchpad && config.screening.allowedLaunchpads?.length > 0 && !config.screening.allowedLaunchpads.includes(launchpad)) {
         log("screening", `Skipping ${pool.name} — launchpad ${launchpad} not in allow-list`);
+        filteredOut.push({ name: pool.name, reason: `launchpad ${launchpad} not in allow-list` });
         return false;
       }
       if (launchpad && config.screening.blockedLaunchpads.includes(launchpad)) {
         log("screening", `Skipping ${pool.name} — blocked launchpad (${launchpad})`);
+        filteredOut.push({ name: pool.name, reason: `blocked launchpad (${launchpad})` });
         return false;
       }
       const botPct = ti?.audit?.bot_holders_pct;
       const maxBotHoldersPct = config.screening.maxBotHoldersPct;
       if (botPct != null && maxBotHoldersPct != null && botPct > maxBotHoldersPct) {
         log("screening", `Bot-holder filter: dropped ${pool.name} — bots ${botPct}% > ${maxBotHoldersPct}%`);
+        filteredOut.push({ name: pool.name, reason: `bot holders ${botPct}% > ${maxBotHoldersPct}%` });
         return false;
       }
       return true;
     });
 
     if (passing.length === 0) {
-      screenReport = `No candidates available (all filtered by launchpad / holder-quality rules).`;
+      const examples = filteredOut.slice(0, 3)
+        .map((entry) => `- ${entry.name}: ${entry.reason}`)
+        .join("\n");
+      const combined = filteredOut.length > 0 ? filteredOut : earlyFilteredExamples;
+      const combinedExamples = combined.slice(0, 3)
+        .map((entry) => `- ${entry.name}: ${entry.reason}`)
+        .join("\n");
+      screenReport = combinedExamples
+        ? `No candidates available.\nFiltered examples:\n${combinedExamples}`
+        : `No candidates available (all filtered by launchpad / holder-quality rules).`;
       return screenReport;
     }
 
@@ -456,43 +525,23 @@ export async function runScreeningCycle({ silent = false } = {}) {
         pool.dex_screener_paid  ? "dex_screener_paid"  : null,
         pool.dev_sold_all       ? "dev_sold_all(bullish)" : null,
       ].filter(Boolean).join(", ");
-      const pvpLine = pool.is_pvp
-        ? `  pvp: HIGH — rival ${pool.pvp_rival_name || pool.pvp_symbol} (${pool.pvp_rival_mint?.slice(0, 8)}...) has pool ${pool.pvp_rival_pool?.slice(0, 8)}..., tvl=$${pool.pvp_rival_tvl}, holders=${pool.pvp_rival_holders}, fees=${pool.pvp_rival_fees}SOL`
-        : null;
 
       const block = [
         `POOL: ${pool.name} (${pool.pool})`,
         `  metrics: bin_step=${pool.bin_step}, fee_pct=${pool.fee_pct}%, fee_tvl=${pool.fee_active_tvl_ratio}, vol=$${pool.volume_window}, tvl=$${pool.active_tvl}, volatility=${pool.volatility}, mcap=$${pool.mcap}, organic=${pool.organic_score}${pool.token_age_hours != null ? `, age=${pool.token_age_hours}h` : ""}`,
         `  audit: top10=${top10Pct}%, bots=${botPct}%, fees=${feesSol}SOL${launchpad ? `, launchpad=${launchpad}` : ""}`,
-        pvpLine,
         okxParts ? `  okx: ${okxParts}` : okxUnavailable ? `  okx: unavailable` : null,
         okxTags  ? `  tags: ${okxTags}` : null,
         pool.price_vs_ath_pct != null ? `  ath: price_vs_ath=${pool.price_vs_ath_pct}%${pool.top_cluster_trend ? `, top_cluster=${pool.top_cluster_trend}` : ""}` : null,
         `  smart_wallets: ${sw?.in_pool?.length ?? 0} present${sw?.in_pool?.length ? ` → CONFIDENCE BOOST (${sw.in_pool.map(w => w.name).join(", ")})` : ""}`,
         activeBin != null ? `  active_bin: ${activeBin}` : null,
         priceChange != null ? `  1h: price${priceChange >= 0 ? "+" : ""}${priceChange}%, net_buyers=${netBuyers ?? "?"}` : null,
-        n?.narrative ? `  narrative: ${n.narrative.slice(0, 500)}` : `  narrative: none`,
-        mem ? `  memory: ${mem}` : null,
+        n?.narrative ? `  narrative_untrusted: ${sanitizeUntrustedPromptText(n.narrative, 500)}` : `  narrative_untrusted: none`,
+        mem ? `  memory_untrusted: ${sanitizeUntrustedPromptText(mem, 500)}` : null,
       ].filter(Boolean).join("\n");
-
-      // Stage signals for Darwinian weighting — captured before LLM decides
-      if (config.darwin?.enabled) {
-        stageSignals(pool.pool, {
-          organic_score:         pool.organic_score         ?? null,
-          fee_tvl_ratio:         pool.fee_active_tvl_ratio  ?? null,
-          volume:                pool.volume_window         ?? null,
-          mcap:                  pool.mcap                  ?? null,
-          holder_count:          ti?.holders                ?? null,
-          smart_wallets_present: (sw?.in_pool?.length ?? 0) > 0,
-          narrative_quality:     n?.narrative ? "present" : "absent",
-          volatility:            pool.volatility            ?? null,
-        });
-      }
 
       return block;
     });
-
-    const weightsSummary = config.darwin?.enabled ? getWeightsSummary() : null;
 
     const { content } = await agentLoop(`
 SCREENING CYCLE
@@ -621,8 +670,17 @@ Summarize the current portfolio health, total fees earned, and performance of al
       const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
       if (!result?.positions?.length) return;
       for (const p of result.positions) {
+        if (!p.pnl_pct_suspicious && queuePeakConfirmation(p.position, p.pnl_pct)) {
+          schedulePeakConfirmation(p.position);
+        }
         const exit = updatePnlAndCheckExits(p.position, p, config.management);
         if (exit) {
+          if (exit.action === "TRAILING_TP" && exit.needs_confirmation) {
+            if (queueTrailingDropConfirmation(p.position, exit.peak_pnl_pct, exit.current_pnl_pct, config.management.trailingDropPct)) {
+              scheduleTrailingDropConfirmation(p.position);
+            }
+            continue;
+          }
           const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
           const sinceLastTrigger = Date.now() - _pollTriggeredAt;
           if (sinceLastTrigger >= cooldownMs) {
@@ -691,6 +749,7 @@ let busy = false;
 const _telegramQueue = []; // queued messages received while agent was busy
 const sessionHistory = []; // persists conversation across REPL turns
 const MAX_HISTORY = 20;    // keep last 20 messages (10 exchanges)
+let _ttyInterface = null;
 
 function appendHistory(userMsg, assistantMsg) {
   sessionHistory.push({ role: "user", content: userMsg });
@@ -698,6 +757,120 @@ function appendHistory(userMsg, assistantMsg) {
   // Trim to last MAX_HISTORY messages
   if (sessionHistory.length > MAX_HISTORY) {
     sessionHistory.splice(0, sessionHistory.length - MAX_HISTORY);
+  }
+}
+
+function refreshPrompt() {
+  if (!_ttyInterface) return;
+  _ttyInterface.setPrompt(buildPrompt());
+  _ttyInterface.prompt(true);
+}
+
+async function drainTelegramQueue() {
+  while (_telegramQueue.length > 0 && !_managementBusy && !_screeningBusy && !busy) {
+    const queued = _telegramQueue.shift();
+    await telegramHandler(queued);
+  }
+}
+
+async function telegramHandler(msg) {
+  const text = msg?.text?.trim();
+  if (!text) return;
+  if (_managementBusy || _screeningBusy || busy) {
+    if (_telegramQueue.length < 5) {
+      _telegramQueue.push(msg);
+      sendMessage(`⏳ Queued (${_telegramQueue.length} in queue): "${text.slice(0, 60)}"`).catch(() => {});
+    } else {
+      sendMessage("Queue is full (5 messages). Wait for the agent to finish.").catch(() => {});
+    }
+    return;
+  }
+
+  if (text === "/briefing") {
+    try {
+      const briefing = await generateBriefing();
+      await sendHTML(briefing);
+    } catch (e) {
+      await sendMessage(`Error: ${e.message}`).catch(() => {});
+    }
+    return;
+  }
+
+  if (text === "/positions") {
+    try {
+      const { positions, total_positions } = await getMyPositions({ force: true });
+      if (total_positions === 0) { await sendMessage("No open positions."); return; }
+      const cur = config.management.solMode ? "◎" : "$";
+      const lines = positions.map((p, i) => {
+        const pnl = p.pnl_usd >= 0 ? `+${cur}${p.pnl_usd}` : `-${cur}${Math.abs(p.pnl_usd)}`;
+        const age = p.age_minutes != null ? `${p.age_minutes}m` : "?";
+        const oor = !p.in_range ? " ⚠️OOR" : "";
+        return `${i + 1}. ${p.pair} | ${cur}${p.total_value_usd} | PnL: ${pnl} | fees: ${cur}${p.unclaimed_fees_usd} | ${age}${oor}`;
+      });
+      await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /set <n> <note> to set instruction`);
+    } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+    return;
+  }
+
+  const closeMatch = text.match(/^\/close\s+(\d+)$/i);
+  if (closeMatch) {
+    try {
+      const idx = parseInt(closeMatch[1]) - 1;
+      const { positions } = await getMyPositions({ force: true });
+      if (idx < 0 || idx >= positions.length) { await sendMessage("Invalid number. Use /positions first."); return; }
+      const pos = positions[idx];
+      await sendMessage(`Closing ${pos.pair}...`);
+      const result = await closePosition({ position_address: pos.position });
+      if (result.success) {
+        const closeTxs = result.close_txs?.length ? result.close_txs : result.txs;
+        const claimNote = result.claim_txs?.length ? `\nClaim txs: ${result.claim_txs.join(", ")}` : "";
+        await sendMessage(`✅ Closed ${pos.pair}\nPnL: ${config.management.solMode ? "◎" : "$"}${result.pnl_usd ?? "?"} | close txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}`);
+      } else {
+        await sendMessage(`❌ Close failed: ${JSON.stringify(result)}`);
+      }
+    } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+    return;
+  }
+
+  const setMatch = text.match(/^\/set\s+(\d+)\s+(.+)$/i);
+  if (setMatch) {
+    try {
+      const idx = parseInt(setMatch[1]) - 1;
+      const note = setMatch[2].trim();
+      const { positions } = await getMyPositions({ force: true });
+      if (idx < 0 || idx >= positions.length) { await sendMessage("Invalid number. Use /positions first."); return; }
+      const pos = positions[idx];
+      setPositionInstruction(pos.position, note);
+      await sendMessage(`✅ Note set for ${pos.pair}:\n"${note}"`);
+    } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
+    return;
+  }
+
+  busy = true;
+  let liveMessage = null;
+  try {
+    log("telegram", `Incoming: ${text}`);
+    const hasCloseIntent = /\bclose\b|\bsell\b|\bexit\b|\bwithdraw\b/i.test(text);
+    const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b|\badd liquidity\b/i.test(text);
+    const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
+    const agentModel = agentRole === "SCREENER" ? config.llm.screeningModel : config.llm.generalModel;
+    liveMessage = await createLiveMessage("🤖 Live Update", `Request: ${text.slice(0, 240)}`);
+    const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, agentRole, agentModel, null, {
+      requireTool: true,
+      interactive: true,
+      onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
+      onToolFinish: async ({ name, result, success }) => { await liveMessage?.toolFinish(name, result, success); },
+    });
+    appendHistory(text, content);
+    if (liveMessage) await liveMessage.finalize(stripThink(content));
+    else await sendMessage(stripThink(content));
+  } catch (e) {
+    if (liveMessage) await liveMessage.fail(e.message).catch(() => {});
+    else await sendMessage(`Error: ${e.message}`).catch(() => {});
+  } finally {
+    busy = false;
+    refreshPrompt();
+    drainTelegramQueue().catch(() => {});
   }
 }
 
@@ -710,6 +883,7 @@ if (isTTY) {
     output: process.stdout,
     prompt: buildPrompt(),
   });
+  _ttyInterface = rl;
 
   // Update prompt countdown every 10 seconds
   setInterval(() => {
@@ -785,113 +959,6 @@ if (isTTY) {
   // Always start autonomous cycles on launch
   launchCron();
   maybeRunMissedBriefing().catch(() => { });
-
-  // Telegram bot — queue messages received while busy, drain after each task
-  async function drainTelegramQueue() {
-    while (_telegramQueue.length > 0 && !_managementBusy && !_screeningBusy && !busy) {
-      const queued = _telegramQueue.shift();
-      await telegramHandler(queued);
-    }
-  }
-
-  async function telegramHandler(text) {
-    if (_managementBusy || _screeningBusy || busy) {
-      if (_telegramQueue.length < 5) {
-        _telegramQueue.push(text);
-        sendMessage(`⏳ Queued (${_telegramQueue.length} in queue): "${text.slice(0, 60)}"`).catch(() => {});
-      } else {
-        sendMessage("Queue is full (5 messages). Wait for the agent to finish.").catch(() => {});
-      }
-      return;
-    }
-
-    if (text === "/briefing") {
-      try {
-        const briefing = await generateBriefing();
-        await sendHTML(briefing);
-      } catch (e) {
-        await sendMessage(`Error: ${e.message}`).catch(() => { });
-      }
-      return;
-    }
-
-    if (text === "/positions") {
-      try {
-        const { positions, total_positions } = await getMyPositions({ force: true });
-        if (total_positions === 0) { await sendMessage("No open positions."); return; }
-        const cur = config.management.solMode ? "◎" : "$";
-        const lines = positions.map((p, i) => {
-          const pnl = p.pnl_usd >= 0 ? `+${cur}${p.pnl_usd}` : `-${cur}${Math.abs(p.pnl_usd)}`;
-          const age = p.age_minutes != null ? `${p.age_minutes}m` : "?";
-          const oor = !p.in_range ? " ⚠️OOR" : "";
-          return `${i + 1}. ${p.pair} | ${cur}${p.total_value_usd} | PnL: ${pnl} | fees: ${cur}${p.unclaimed_fees_usd} | ${age}${oor}`;
-        });
-        await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /set <n> <note> to set instruction`);
-      } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => { }); }
-      return;
-    }
-
-    const closeMatch = text.match(/^\/close\s+(\d+)$/i);
-    if (closeMatch) {
-      try {
-        const idx = parseInt(closeMatch[1]) - 1;
-        const { positions } = await getMyPositions({ force: true });
-        if (idx < 0 || idx >= positions.length) { await sendMessage(`Invalid number. Use /positions first.`); return; }
-        const pos = positions[idx];
-        await sendMessage(`Closing ${pos.pair}...`);
-        const result = await closePosition({ position_address: pos.position });
-        if (result.success) {
-          const closeTxs = result.close_txs?.length ? result.close_txs : result.txs;
-          const claimNote = result.claim_txs?.length ? `\nClaim txs: ${result.claim_txs.join(", ")}` : "";
-          await sendMessage(`✅ Closed ${pos.pair}\nPnL: ${config.management.solMode ? "◎" : "$"}${result.pnl_usd ?? "?"} | close txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}`);
-        } else {
-          await sendMessage(`❌ Close failed: ${JSON.stringify(result)}`);
-        }
-      } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => { }); }
-      return;
-    }
-
-    const setMatch = text.match(/^\/set\s+(\d+)\s+(.+)$/i);
-    if (setMatch) {
-      try {
-        const idx = parseInt(setMatch[1]) - 1;
-        const note = setMatch[2].trim();
-        const { positions } = await getMyPositions({ force: true });
-        if (idx < 0 || idx >= positions.length) { await sendMessage(`Invalid number. Use /positions first.`); return; }
-        const pos = positions[idx];
-        setPositionInstruction(pos.position, note);
-        await sendMessage(`✅ Note set for ${pos.pair}:\n"${note}"`);
-      } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => { }); }
-      return;
-    }
-
-    busy = true;
-    let liveMessage = null;
-    try {
-      log("telegram", `Incoming: ${text}`);
-      const hasCloseIntent = /\bclose\b|\bsell\b|\bexit\b|\bwithdraw\b/i.test(text);
-      const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b|\badd liquidity\b/i.test(text);
-      const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
-      const agentModel = agentRole === "SCREENER" ? config.llm.screeningModel : config.llm.generalModel;
-      liveMessage = await createLiveMessage("🤖 Live Update", `Request: ${text.slice(0, 240)}`);
-      const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, agentRole, agentModel, null, {
-        interactive: true,
-        onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
-        onToolFinish: async ({ name, result, success }) => { await liveMessage?.toolFinish(name, result, success); },
-      });
-      appendHistory(text, content);
-      if (liveMessage) await liveMessage.finalize(stripThink(content));
-      else await sendMessage(stripThink(content));
-    } catch (e) {
-      if (liveMessage) await liveMessage.fail(e.message).catch(() => {});
-      else await sendMessage(`Error: ${e.message}`).catch(() => { });
-    } finally {
-      busy = false;
-      rl.setPrompt(buildPrompt());
-      rl.prompt(true);
-      drainTelegramQueue().catch(() => {});
-    }
-  }
 
   startPolling(telegramHandler);
 
@@ -1076,8 +1143,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
           return;
         }
         const fs = await import("fs");
-        const lessonsPath = new URL("./lessons.json", import.meta.url).pathname;
-        const lessonsData = JSON.parse(fs.default.readFileSync(lessonsPath, "utf8"));
+        const lessonsData = JSON.parse(fs.default.readFileSync("./lessons.json", "utf8"));
         const result = evolveThresholds(lessonsData.performance, config);
         if (!result || Object.keys(result.changes).length === 0) {
           console.log("\nNo threshold changes needed — current settings already match performance data.\n");
@@ -1096,7 +1162,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
     // ── Free-form chat ───────────────────────
     await runBusy(async () => {
       log("user", input);
-      const { content } = await agentLoop(input, config.llm.maxSteps, sessionHistory, "GENERAL", config.llm.generalModel, null, { interactive: true });
+      const { content } = await agentLoop(input, config.llm.maxSteps, sessionHistory, "GENERAL", config.llm.generalModel, null, { requireTool: true });
       appendHistory(input, content);
       console.log(`\n${content}\n`);
     });
@@ -1109,82 +1175,15 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   log("startup", "Non-TTY mode — starting cron cycles immediately.");
   startCronJobs();
   maybeRunMissedBriefing().catch(() => { });
-  startPolling(async (text) => {
-    // Minimal telegramHandler for non-TTY mode
-    if (text === "/briefing") {
-      try {
-        const briefing = await generateBriefing();
-        await sendHTML(briefing);
-      } catch (e) {
-        await sendMessage(`Error: ${e.message}`).catch(() => {});
-      }
-      return;
-    }
-    if (text === "/positions") {
-      try {
-        const { positions, total_positions } = await getMyPositions({ force: true });
-        if (total_positions === 0) { await sendMessage("No open positions."); return; }
-        const cur = config.management.solMode ? "◎" : "$";
-        const lines = positions.map((p, i) => {
-          const pnl = p.pnl_usd >= 0 ? `+${cur}${p.pnl_usd}` : `-${cur}${Math.abs(p.pnl_usd)}`;
-          const age = p.age_minutes != null ? `${p.age_minutes}m` : "?";
-          const oor = !p.in_range ? " ⚠️OOR" : "";
-          return `${i + 1}. ${p.pair} | ${cur}${p.total_value_usd} | PnL: ${pnl} | fees: ${cur}${p.unclaimed_fees_usd} | ${age}${oor}`;
-        });
-        await sendMessage(`📊 Open Positions (${total_positions}):\n\n${lines.join("\n")}\n\n/close <n> to close | /set <n> <note> to set instruction`);
-      } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
-      return;
-    }
-    const closeMatch = text.match(/^\/close\s+(\d+)$/i);
-    if (closeMatch) {
-      try {
-        const idx = parseInt(closeMatch[1]) - 1;
-        const { positions } = await getMyPositions({ force: true });
-        if (idx < 0 || idx >= positions.length) { await sendMessage(`Invalid number. Use /positions first.`); return; }
-        const pos = positions[idx];
-        await sendMessage(`Closing ${pos.pair}...`);
-        const result = await closePosition({ position_address: pos.position });
-        if (result.success) {
-          const closeTxs = result.close_txs?.length ? result.close_txs : result.txs;
-          const claimNote = result.claim_txs?.length ? `\nClaim txs: ${result.claim_txs.join(", ")}` : "";
-          await sendMessage(`✅ Closed ${pos.pair}\nPnL: ${config.management.solMode ? "◎" : "$"}${result.pnl_usd ?? "?"} | close txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}`);
-        } else {
-          await sendMessage(`❌ Close failed: ${JSON.stringify(result)}`);
-        }
-      } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
-      return;
-    }
-    const setMatch = text.match(/^\/set\s+(\d+)\s+(.+)$/i);
-    if (setMatch) {
-      try {
-        const idx = parseInt(setMatch[1]) - 1;
-        const note = setMatch[2].trim();
-        const { positions } = await getMyPositions({ force: true });
-        if (idx < 0 || idx >= positions.length) { await sendMessage(`Invalid number. Use /positions first.`); return; }
-        const pos = positions[idx];
-        setPositionInstruction(pos.position, note);
-        await sendMessage(`✅ Note set for ${pos.pair}:\n"${note}"`);
-      } catch (e) { await sendMessage(`Error: ${e.message}`).catch(() => {}); }
-      return;
-    }
-    // General agent loop
-    try {
-      log("telegram", `Incoming (non-TTY): ${text}`);
-      const hasCloseIntent = /\bclose\b|\bsell\b|\bexit\b|\bwithdraw\b/i.test(text);
-      const isDeployRequest = !hasCloseIntent && /\bdeploy\b|\bopen position\b|\blp into\b|\badd liquidity\b/i.test(text);
-      const agentRole = isDeployRequest ? "SCREENER" : "GENERAL";
-      const agentModel = agentRole === "SCREENER" ? config.llm.screeningModel : config.llm.generalModel;
-      const { content } = await agentLoop(text, config.llm.maxSteps, [], agentRole, agentModel);
-      await sendMessage(stripThink(content));
-    } catch (e) {
-      await sendMessage(`Error: ${e.message}`).catch(() => {});
-    }
-  });
+  startPolling(telegramHandler);
   (async () => {
     try {
+      const startupStep3 = process.env.DRY_RUN === "true"
+        ? `3. Ignore wallet SOL threshold in dry run: get_top_candidates then simulate deploy ${DEPLOY} SOL.`
+        : `3. If SOL >= ${config.management.minSolToOpen}: get_top_candidates then deploy ${DEPLOY} SOL.`;
       await agentLoop(`
 STARTUP CHECK
-1. get_wallet_balance. 2. get_my_positions. 3. If SOL >= ${config.management.minSolToOpen}: get_top_candidates then deploy ${DEPLOY} SOL. 4. Report.
+1. get_wallet_balance. 2. get_my_positions. ${startupStep3} 4. Report.
       `, config.llm.maxSteps, [], "SCREENER");
     } catch (e) {
       log("startup_error", e.message);

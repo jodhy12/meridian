@@ -19,7 +19,7 @@ import {
   syncOpenPositions,
 } from "../state.js";
 import { recordPerformance } from "../lessons.js";
-import { isPoolOnCooldown } from "../pool-memory.js";
+import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
 import { normalizeMint } from "./wallet.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
@@ -115,8 +115,8 @@ export async function deployPosition({
   const activeBinsAbove = bins_above ?? 0;
 
   if (isPoolOnCooldown(pool_address)) {
-    log("deploy", `Pool ${pool_address.slice(0, 8)} is on cooldown (closed for low yield) — skipping`);
-    return { success: false, error: "Pool on cooldown — was recently closed for low yield. Try a different pool." };
+    log("deploy", `Pool ${pool_address.slice(0, 8)} is on cooldown — skipping`);
+    return { success: false, error: "Pool on cooldown — was recently closed with a cooldown reason. Try a different pool." };
   }
 
   if (process.env.DRY_RUN === "true") {
@@ -139,6 +139,11 @@ export async function deployPosition({
   const { StrategyType } = await getDLMM();
   const wallet = getWallet();
   const pool = await getPool(pool_address);
+  const baseMint = pool.lbPair.tokenXMint.toString();
+  if (isBaseMintOnCooldown(baseMint)) {
+    log("deploy", `Base mint ${baseMint.slice(0, 8)} is on cooldown — skipping deploy for pool ${pool_address.slice(0, 8)}`);
+    return { success: false, error: "Token on cooldown — recently closed out-of-range too many times. Try a different token." };
+  }
   const activeBin = await pool.getActiveBin();
 
   // Range calculation
@@ -312,7 +317,6 @@ async function fetchLpAgentOpenPositions(walletAddress) {
       const addr = p.position || p.id || p.tokenId;
       if (addr) byAddress[addr] = p;
     }
-    log("lpagent_api", `LPAgent active — ${positions.length} position(s) loaded (PnL/fees/value from LPAgent, range/OOR from Meteora)`);
     return byAddress;
   } catch (e) {
     log("lpagent_api", `Fetch error for owner ${walletAddress.slice(0, 8)}: ${e.message}`);
@@ -418,6 +422,7 @@ function deriveLpAgentPnlPct(lpData, solMode = false) {
   const pnl = currentValue + unclaimedFees - deposit;
   return (pnl / deposit) * 100;
 }
+
 // ─── Get My Positions ──────────────────────────────────────────
 export async function getMyPositions({ force = false, silent = false } = {}) {
   if (!force && _positionsCache && Date.now() - _positionsCacheAt < POSITIONS_CACHE_TTL) {
@@ -462,6 +467,9 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
 
         // Bin data: from supplemental PnL call (OOR) or tracked state (in-range)
         const binData = binDataByPool[pool.poolAddress]?.[positionAddress];
+        if (!binData) {
+          log("positions_warn", `PnL API missing data for ${positionAddress.slice(0, 8)} in pool ${pool.poolAddress.slice(0, 8)} — using portfolio only for open-position discovery`);
+        }
         const lowerBin  = binData?.lowerBinId      ?? tracked?.bin_range?.min ?? null;
         const upperBin  = binData?.upperBinId      ?? tracked?.bin_range?.max ?? null;
         const activeBin = binData?.poolActiveBinId ?? tracked?.bin_range?.active ?? null;
@@ -789,7 +797,7 @@ export async function closePosition({ position_address, reason }) {
         closeTxHashes.push(txHash);
       }
     } else {
-      log("close", `Step 2: No position liquidity detected, closing account`);
+      log("close", `Step 2: Position is empty, forcing close account`);
       const closeTx = await pool.closePosition({
         owner: wallet.publicKey,
         position: { publicKey: positionPubKey },
@@ -846,14 +854,14 @@ export async function closePosition({ position_address, reason }) {
       }
 
       // Fetch closed PnL from API — authoritative source after withdrawal settles
-      // Retry up to 4 times with increasing delay to allow blockchain + API indexing to settle
+      // Retry up to 5 times with increasing delay to allow blockchain + API indexing to settle
       let pnlUsd = 0;
       let pnlPct = 0;
       let finalValueUsd = 0;
       let initialUsd = 0;
       let feesUsd = tracked.total_fees_claimed_usd || 0;
       const closedUrl = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${wallet.publicKey.toString()}&status=closed&pageSize=50&page=1`;
-      const SETTLE_DELAYS = [5000, 10000, 15000, 20000, 30000]; // ms between retries
+      const SETTLE_DELAYS = [5000, 10000, 15000, 20000, 30000];
       for (let attempt = 0; attempt < SETTLE_DELAYS.length; attempt++) {
         await new Promise(r => setTimeout(r, SETTLE_DELAYS[attempt]));
         try {
@@ -868,7 +876,7 @@ export async function closePosition({ position_address, reason }) {
             initialUsd    = parseFloat(posEntry.allTimeDeposits?.total?.usd || 0);
             feesUsd       = parseFloat(posEntry.allTimeFees?.total?.usd || 0) || feesUsd;
             log("close", `Closed PnL from API (attempt ${attempt + 1}): pnl=${pnlUsd.toFixed(2)} USD (${pnlPct.toFixed(2)}%), withdrawn=${finalValueUsd.toFixed(2)}, deposited=${initialUsd.toFixed(2)}`);
-            break; // got authoritative data, stop retrying
+            break;
           } else {
             log("close_warn", `Position not found in status=closed (attempt ${attempt + 1}/${SETTLE_DELAYS.length}) — still settling`);
           }
@@ -896,9 +904,8 @@ export async function closePosition({ position_address, reason }) {
         }
       }
 
-      // Bug fix: stop loss PnL misleading on rug/collapse events.
-      // Meteora API includes SOL residual from auto-swap, making pnl_pct look small.
-      // If stop loss AND pnl_pct suspiciously small, override with raw withdrawal delta.
+      // Stop loss PnL override: Meteora API includes SOL residual from auto-swap,
+      // making pnl_pct look small on rug/collapse events. Override with withdrawal delta.
       const isStopLoss = (reason || "").toLowerCase().includes("stop loss");
       if (isStopLoss && Math.abs(pnlPct) < 10 && initialUsd > 0 && finalValueUsd > 0) {
         const impliedDrop = ((finalValueUsd - initialUsd) / initialUsd) * 100;

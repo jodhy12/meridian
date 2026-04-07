@@ -6,6 +6,25 @@ import { tools } from "./tools/definitions.js";
 
 const MANAGER_TOOLS  = new Set(["close_position", "claim_fees", "swap_token", "update_config", "get_position_pnl", "get_my_positions", "set_position_note", "add_pool_note", "get_wallet_balance", "get_technical_signals"]);
 const SCREENER_TOOLS = new Set(["deploy_position", "get_active_bin", "get_top_candidates", "check_smart_wallets_on_pool", "get_token_holders", "get_token_narrative", "get_token_info", "search_pools", "get_pool_memory", "add_pool_note", "add_to_blacklist", "update_config", "get_wallet_balance", "get_my_positions", "get_technical_signals"]);
+const GENERAL_INTENT_ONLY_TOOLS = new Set([
+  "self_update",
+  "update_config",
+  "add_to_blacklist",
+  "remove_from_blacklist",
+  "block_deployer",
+  "unblock_deployer",
+  "add_pool_note",
+  "set_position_note",
+  "add_smart_wallet",
+  "remove_smart_wallet",
+  "add_lesson",
+  "pin_lesson",
+  "unpin_lesson",
+  "clear_lessons",
+  "add_strategy",
+  "remove_strategy",
+  "set_active_strategy",
+]);
 
 // Intent → tool subsets for GENERAL role
 const INTENT_TOOLS = {
@@ -58,10 +77,11 @@ function getToolsForRole(agentType, goal = "") {
     }
   }
 
-  // Fall back to all tools if no intent matched
-  if (matched.size === 0) return tools;
+  // Fall back to all tools except intent-only tools if no intent matched
+  if (matched.size === 0) return tools.filter(t => !GENERAL_INTENT_ONLY_TOOLS.has(t.function.name));
   return tools.filter(t => matched.has(t.function.name));
 }
+
 import { getWalletBalances } from "./tools/wallet.js";
 import { getMyPositions } from "./tools/dlmm.js";
 import { log } from "./logger.js";
@@ -83,11 +103,40 @@ const MUTATING_TOOL_INTENTS = /\b(deploy|open position|add liquidity|lp into|inv
 const LIVE_DATA_TOOL_INTENTS = /\b(balance|wallet|position|portfolio|pnl|yield|range|show positions|open positions|screen|candidate|find pool|search|research|analyze|check pool|token holders|narrative|study top|top lpers?|lp behavior|who.?s lping|performance|history|stats|report|list smart wallets|list blacklist|list blocked deployers|list lessons)\b/i;
 const CONFIG_READ_ONLY_INTENTS = /\b(check|show|what(?:'s| is)?|review|inspect|see)\b.*\b(config|settings?|thresholds?)\b/i;
 
-function shouldRequireRealToolUse(goal, agentType, interactive = false) {
+function shouldRequireRealToolUse(goal, agentType, interactive = false, requireTool = false) {
+  if (requireTool) return true;
   if (agentType === "MANAGER") return false;
   if (CONFIG_READ_ONLY_INTENTS.test(goal)) return false;
   if (MUTATING_TOOL_INTENTS.test(goal)) return true;
   return interactive && LIVE_DATA_TOOL_INTENTS.test(goal);
+}
+
+function buildMessages(systemPrompt, sessionHistory, goal, providerMode = "system") {
+  if (providerMode === "user_embedded") {
+    return [
+      ...sessionHistory,
+      {
+        role: "user",
+        content: `[SYSTEM INSTRUCTIONS]\n${systemPrompt}\n\n[USER REQUEST]\n${goal}`,
+      },
+    ];
+  }
+
+  return [
+    { role: "system", content: systemPrompt },
+    ...sessionHistory,
+    { role: "user", content: goal },
+  ];
+}
+
+function isSystemRoleError(error) {
+  const message = String(error?.message || error?.error?.message || error || "");
+  return /invalid message role:\s*system/i.test(message);
+}
+
+function isToolChoiceRequiredError(error) {
+  const message = String(error?.message || error?.error?.message || error || "");
+  return /tool_choice/i.test(message) && /required/i.test(message);
 }
 
 /**
@@ -98,7 +147,7 @@ function shouldRequireRealToolUse(goal, agentType, interactive = false) {
  * @returns {string} - The agent's final text response
  */
 export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHistory = [], agentType = "GENERAL", model = null, maxOutputTokens = null, options = {}) {
-  const { interactive = false, onToolStart = null, onToolFinish = null } = options;
+  const { requireTool = false, interactive = false, onToolStart = null, onToolFinish = null } = options;
   // Build dynamic system prompt with current portfolio state
   const [portfolio, positions] = await Promise.all([getWalletBalances(), getMyPositions()]);
   const stateSummary = getStateSummary();
@@ -114,11 +163,8 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   }
   const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary, weightsSummary);
 
-  const messages = [
-    { role: "system", content: systemPrompt },
-    ...sessionHistory,          // inject prior conversation turns
-    { role: "user", content: goal },
-  ];
+  let providerMode = "system";
+  let messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);
 
   // Track write tools fired this session — prevent the model from calling the same
   // destructive tool twice (e.g. deploy twice, swap twice after auto-swap)
@@ -126,7 +172,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   // These lock after first attempt regardless of success — retrying them is always wrong
   const NO_RETRY_TOOLS = new Set(["deploy_position"]);
   const firedOnce = new Set();
-  const mustUseRealTool = shouldRequireRealToolUse(goal, agentType, interactive);
+  const mustUseRealTool = shouldRequireRealToolUse(goal, agentType, interactive, requireTool);
   let sawToolCall = false;
   let noToolRetryCount = 0;
 
@@ -143,30 +189,33 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       let usedModel = activeModel;
       // Force a tool call on step 0 for action intents — prevents the model from inventing deploy/close outcomes
       const ACTION_INTENTS = /\b(deploy|open|add liquidity|close|exit|withdraw|claim|swap|block|unblock)\b/i;
-      const toolChoice = (step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) ? "required" : "auto";
+      let toolChoice = (step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) ? "required" : "auto";
 
-      let effectiveToolChoice = toolChoice;
-      // log("agent", `${maxOutputTokens} - ${config.llm.maxTokens} - ${toolChoice} - ${mustUseRealTool}`)
       for (let attempt = 0; attempt < 3; attempt++) {
-        const body = {
-          model: usedModel,
-          messages,
-          tools: getToolsForRole(agentType, goal),
-          tool_choice: effectiveToolChoice,
-          temperature: config.llm.temperature,
-          max_tokens: maxOutputTokens ?? config.llm.maxTokens,
-        }
-        // log('agent', JSON.stringify(body))
         try {
-          response = await client.chat.completions.create(body);
-        } catch (apiErr) {
-          const status = apiErr.status ?? apiErr.code;
-          const msg = apiErr.message || "";
-          if ((status === 404 || msg.includes("tool_choice") || msg.includes("No endpoints found")) && effectiveToolChoice !== "auto") {
-            log("agent", `Model ${usedModel} does not support tool_choice, retrying with 'auto'`);
-            effectiveToolChoice = "auto";
+          response = await client.chat.completions.create({
+            model: usedModel,
+            messages,
+            tools: getToolsForRole(agentType, goal),
+            tool_choice: toolChoice,
+            temperature: config.llm.temperature,
+            max_tokens: maxOutputTokens ?? config.llm.maxTokens,
+          });
+        } catch (error) {
+          if (providerMode === "system" && isSystemRoleError(error)) {
+            providerMode = "user_embedded";
+            messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);
+            log("agent", "Provider rejected system role — retrying with embedded system instructions");
+            attempt -= 1;
             continue;
           }
+          if (toolChoice === "required" && isToolChoiceRequiredError(error)) {
+            toolChoice = "auto";
+            log("agent", "Provider rejected tool_choice=required — retrying with tool_choice=auto");
+            attempt -= 1;
+            continue;
+          }
+          const status = error.status ?? error.code;
           if (status === 502 || status === 503 || status === 529) {
             const wait = (attempt + 1) * 5000;
             if (attempt === 1 && usedModel !== FALLBACK_MODEL) {
@@ -178,14 +227,11 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             }
             continue;
           }
-          throw apiErr;
+          throw error;
         }
         if (response.choices?.length) break;
         const errCode = response.error?.code;
-        if (errCode === 404 || response.error?.message?.includes("tool_choice")) {
-          log("agent", `Model ${usedModel} does not support tool_choice, retrying with 'auto'`);
-          effectiveToolChoice = "auto";
-        } else if (errCode === 502 || errCode === 503 || errCode === 529) {
+        if (errCode === 502 || errCode === 503 || errCode === 529) {
           const wait = (attempt + 1) * 5000;
           if (attempt === 1 && usedModel !== FALLBACK_MODEL) {
             usedModel = FALLBACK_MODEL;
@@ -230,9 +276,15 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
         // Hermes sometimes returns null content — pop the empty message and retry once
         if (!msg.content) {
           messages.pop(); // remove the empty assistant message
+          emptyStreak++;
+          if (emptyStreak >= 3) {
+            log("agent", "3 consecutive empty responses — aborting");
+            return { content: "No response from model after 3 retries.", userMessage: goal };
+          }
           log("agent", "Empty response, retrying...");
           continue;
         }
+        emptyStreak = 0;
         if (mustUseRealTool && !sawToolCall) {
           noToolRetryCount += 1;
           messages.pop();
@@ -244,8 +296,10 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             };
           }
           messages.push({
-            role: "system",
-            content: "You have not used any tool yet. This request requires real tool execution or live tool-backed data. Do not answer from memory or inference. Call the appropriate tool first, then report only the real result.",
+            role: providerMode === "system" ? "system" : "user",
+            content: providerMode === "system"
+              ? "You have not used any tool yet. This request requires real tool execution or live tool-backed data. Do not answer from memory or inference. Call the appropriate tool first, then report only the real result."
+              : "[SYSTEM REMINDER]\nYou have not used any tool yet. This request requires real tool execution or live tool-backed data. Do not answer from memory or inference. Call the appropriate tool first, then report only the real result.",
           });
           continue;
         }

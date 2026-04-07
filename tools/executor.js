@@ -12,7 +12,7 @@ import {
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
-import { setPositionInstruction, resetPeakAfterClaim } from "../state.js";
+import { setPositionInstruction } from "../state.js";
 
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
@@ -50,6 +50,7 @@ const toolMap = {
   get_token_info: getTokenInfo,
   get_token_holders: getTokenHolders,
   get_token_narrative: getTokenNarrative,
+  get_technical_signals: getTechnicalSignals,
   add_smart_wallet: addSmartWallet,
   remove_smart_wallet: removeSmartWallet,
   list_smart_wallets: listSmartWallets,
@@ -60,7 +61,6 @@ const toolMap = {
   swap_token: swapToken,
   get_top_lpers: studyTopLPers,
   study_top_lpers: studyTopLPers,
-  get_technical_signals: getTechnicalSignals,
   set_position_note: ({ position_address, instruction }) => {
     const ok = setPositionInstruction(position_address, instruction || null);
     if (!ok) return { error: `Position ${position_address} not found in state` };
@@ -132,12 +132,10 @@ const toolMap = {
     const CONFIG_MAP = {
       // screening
       minFeeActiveTvlRatio: ["screening", "minFeeActiveTvlRatio"],
-      excludeHighSupplyConcentration: ["screening", "excludeHighSupplyConcentration"],
       minTvl: ["screening", "minTvl"],
       maxTvl: ["screening", "maxTvl"],
       minVolume: ["screening", "minVolume"],
       minOrganic: ["screening", "minOrganic"],
-      minQuoteOrganic: ["screening", "minQuoteOrganic"],
       minHolders: ["screening", "minHolders"],
       minMcap: ["screening", "minMcap"],
       maxMcap: ["screening", "maxMcap"],
@@ -146,22 +144,26 @@ const toolMap = {
       timeframe: ["screening", "timeframe"],
       category: ["screening", "category"],
       minTokenFeesSol: ["screening", "minTokenFeesSol"],
-      avoidPvpSymbols: ["screening", "avoidPvpSymbols"],
-      blockPvpSymbols: ["screening", "blockPvpSymbols"],
       maxBundlePct:     ["screening", "maxBundlePct"],
       maxBotHoldersPct: ["screening", "maxBotHoldersPct"],
       maxTop10Pct: ["screening", "maxTop10Pct"],
-      allowedLaunchpads: ["screening", "allowedLaunchpads"],
-      blockedLaunchpads: ["screening", "blockedLaunchpads"],
       minTokenAgeHours: ["screening", "minTokenAgeHours"],
       maxTokenAgeHours: ["screening", "maxTokenAgeHours"],
       athFilterPct:     ["screening", "athFilterPct"],
+      excludeHighSupplyConcentration: ["screening", "excludeHighSupplyConcentration"],
+      minQuoteOrganic: ["screening", "minQuoteOrganic"],
+      avoidPvpSymbols: ["screening", "avoidPvpSymbols"],
+      blockPvpSymbols: ["screening", "blockPvpSymbols"],
+      allowedLaunchpads: ["screening", "allowedLaunchpads"],
+      blockedLaunchpads: ["screening", "blockedLaunchpads"],
       minFeePerTvl24h: ["management", "minFeePerTvl24h"],
       // management
       minClaimAmount: ["management", "minClaimAmount"],
       autoSwapAfterClaim: ["management", "autoSwapAfterClaim"],
       outOfRangeBinsToClose: ["management", "outOfRangeBinsToClose"],
       outOfRangeWaitMinutes: ["management", "outOfRangeWaitMinutes"],
+      oorCooldownTriggerCount: ["management", "oorCooldownTriggerCount"],
+      oorCooldownHours: ["management", "oorCooldownHours"],
       minVolumeToRebalance: ["management", "minVolumeToRebalance"],
       stopLossPct: ["management", "stopLossPct"],
       takeProfitFeePct: ["management", "takeProfitFeePct"],
@@ -184,7 +186,6 @@ const toolMap = {
       screeningModel: ["llm", "screeningModel"],
       generalModel: ["llm", "generalModel"],
       // strategy
-      minBinStep: ["strategy", "minBinStep"],
       binsBelow: ["strategy", "binsBelow"],
     };
 
@@ -254,6 +255,10 @@ const WRITE_TOOLS = new Set([
   "close_position",
   "swap_token",
 ]);
+const PROTECTED_TOOLS = new Set([
+  ...WRITE_TOOLS,
+  "self_update",
+]);
 
 /**
  * Execute a tool call with safety checks and logging.
@@ -273,7 +278,7 @@ export async function executeTool(name, args) {
   }
 
   // ─── Pre-execution safety checks ──────────
-  if (WRITE_TOOLS.has(name)) {
+  if (PROTECTED_TOOLS.has(name)) {
     const safetyCheck = await runSafetyChecks(name, args);
     if (!safetyCheck.pass) {
       log("safety_block", `${name} blocked: ${safetyCheck.reason}`);
@@ -327,31 +332,16 @@ export async function executeTool(name, args) {
             log("executor_warn", `Auto-swap after close failed: ${e.message}`);
           }
         }
-      } else if (name === "claim_fees") {
-        // Reset trailing TP peak after claim — claim reduces position value so pnl_pct drops,
-        // making the old peak stale and potentially triggering a false trailing TP close.
-        const claimedPosition = toolArgs?.position_address;
-        if (claimedPosition) {
-          try {
-            const positions = await getMyPositions({ force: true, silent: true }).catch(() => null);
-            const pos = positions?.positions?.find(p => p.position === claimedPosition);
-            resetPeakAfterClaim(claimedPosition, pos?.pnl_pct ?? 0);
-          } catch (e) {
-            resetPeakAfterClaim(claimedPosition, 0);
+      } else if (name === "claim_fees" && config.management.autoSwapAfterClaim && result.base_mint) {
+        try {
+          const balances = await getWalletBalances({});
+          const token = balances.tokens?.find(t => t.mint === result.base_mint);
+          if (token && token.usd >= 0.10) {
+            log("executor", `Auto-swapping claimed ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL`);
+            await swapToken({ input_mint: result.base_mint, output_mint: "SOL", amount: token.balance });
           }
-        }
-
-        if (config.management.autoSwapAfterClaim && result.base_mint) {
-          try {
-            const balances = await getWalletBalances({});
-            const token = balances.tokens?.find(t => t.mint === result.base_mint);
-            if (token && token.usd >= 0.10) {
-              log("executor", `Auto-swapping claimed ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL`);
-              await swapToken({ input_mint: result.base_mint, output_mint: "SOL", amount: token.balance });
-            }
-          } catch (e) {
-            log("executor_warn", `Auto-swap after claim failed: ${e.message}`);
-          }
+        } catch (e) {
+          log("executor_warn", `Auto-swap after claim failed: ${e.message}`);
         }
       }
     }
@@ -447,14 +437,16 @@ async function runSafetyChecks(name, args) {
       }
 
       // Check SOL balance
-      const balance = await getWalletBalances();
-      const gasReserve = config.management.gasReserve;
-      const minRequired = amountY + gasReserve;
-      if (balance.sol < minRequired) {
-        return {
-          pass: false,
-          reason: `Insufficient SOL: have ${balance.sol} SOL, need ${minRequired} SOL (${amountY} deploy + ${gasReserve} gas reserve).`,
-        };
+      if (process.env.DRY_RUN !== "true") {
+        const balance = await getWalletBalances();
+        const gasReserve = config.management.gasReserve;
+        const minRequired = amountY + gasReserve;
+        if (balance.sol < minRequired) {
+          return {
+            pass: false,
+            reason: `Insufficient SOL: have ${balance.sol} SOL, need ${minRequired} SOL (${amountY} deploy + ${gasReserve} gas reserve).`,
+          };
+        }
       }
 
       return { pass: true };
@@ -463,6 +455,22 @@ async function runSafetyChecks(name, args) {
     case "swap_token": {
       // Basic check — prevent swapping when DRY_RUN is true
       // (handled inside swapToken itself, but belt-and-suspenders)
+      return { pass: true };
+    }
+
+    case "self_update": {
+      if (process.env.ALLOW_SELF_UPDATE !== "true") {
+        return {
+          pass: false,
+          reason: "self_update is disabled by default. Set ALLOW_SELF_UPDATE=true locally if you really want to enable it.",
+        };
+      }
+      if (!process.stdin.isTTY) {
+        return {
+          pass: false,
+          reason: "self_update is only allowed from a local interactive TTY session, not from Telegram or background automation.",
+        };
+      }
       return { pass: true };
     }
 

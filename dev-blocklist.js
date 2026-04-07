@@ -7,12 +7,9 @@
  */
 
 import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BLOCKLIST_FILE = path.join(__dirname, "dev-blocklist.json");
+const BLOCKLIST_FILE = "./dev-blocklist.json";
 
 function load() {
   if (!fs.existsSync(BLOCKLIST_FILE)) return {};

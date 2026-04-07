@@ -10,12 +10,9 @@
  */
 
 import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const WEIGHTS_FILE = path.join(__dirname, "signal-weights.json");
+const WEIGHTS_FILE = "./signal-weights.json";
 
 // ─── Signal Definitions ─────────────────────────────────────────
 

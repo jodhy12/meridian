@@ -2,91 +2,11 @@ import { config } from "../config.js";
 import { isBlacklisted } from "../token-blacklist.js";
 import { isDevBlocked, getBlockedDevs } from "../dev-blocklist.js";
 import { log } from "../logger.js";
+import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
 
 const DATAPI_JUP = "https://datapi.jup.ag/v1";
 
 const POOL_DISCOVERY_BASE = "https://pool-discovery-api.datapi.meteora.ag";
-const PVP_SHORTLIST_LIMIT = 2;
-const PVP_RIVAL_LIMIT = 2;
-const PVP_MIN_ACTIVE_TVL = 5_000;
-const PVP_MIN_HOLDERS = 500;
-const PVP_MIN_GLOBAL_FEES_SOL = 30;
-
-function normalizeSymbol(symbol) {
-  return String(symbol || "").trim().toUpperCase();
-}
-
-function scoreCandidate(pool) {
-  const feeTvl = Number(pool.fee_active_tvl_ratio || 0);
-  const organic = Number(pool.organic_score || 0);
-  const volume = Number(pool.volume_window || 0);
-  const holders = Number(pool.holders || 0);
-  return feeTvl * 1000 + organic * 10 + volume / 100 + holders / 100;
-}
-
-async function searchAssetsBySymbol(symbol) {
-  const res = await fetch(`${DATAPI_JUP}/assets/search?query=${encodeURIComponent(symbol)}`);
-  if (!res.ok) throw new Error(`assets/search ${res.status}`);
-  const data = await res.json();
-  return Array.isArray(data) ? data : [data];
-}
-
-async function findRivalPool(mint) {
-  const url = `https://dlmm.datapi.meteora.ag/pools?query=${encodeURIComponent(mint)}&sort_by=${encodeURIComponent("tvl:desc")}&filter_by=${encodeURIComponent(`tvl>${PVP_MIN_ACTIVE_TVL}`)}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`rival pool search ${res.status}`);
-  const data = await res.json();
-  const pools = Array.isArray(data?.data) ? data.data : [];
-  return pools.find((pool) => pool?.token_x?.address === mint || pool?.token_y?.address === mint) || null;
-}
-
-async function enrichPvpRisk(pools) {
-  const shortlist = [...pools]
-    .sort((a, b) => scoreCandidate(b) - scoreCandidate(a))
-    .slice(0, PVP_SHORTLIST_LIMIT);
-
-  if (shortlist.length === 0) return;
-
-  const symbolCache = new Map();
-
-  await Promise.all(shortlist.map(async (pool) => {
-    const symbol = normalizeSymbol(pool.base?.symbol);
-    const ownMint = pool.base?.mint;
-    if (!symbol || !ownMint) return;
-
-    let assets = symbolCache.get(symbol);
-    if (!assets) {
-      assets = await searchAssetsBySymbol(symbol).catch(() => []);
-      symbolCache.set(symbol, assets);
-    }
-
-    const rivalAssets = assets
-      .filter((asset) => normalizeSymbol(asset?.symbol) === symbol && asset?.id && asset.id !== ownMint)
-      .sort((a, b) => Number(b?.liquidity || 0) - Number(a?.liquidity || 0))
-      .slice(0, PVP_RIVAL_LIMIT);
-
-    for (const rival of rivalAssets) {
-      const rivalHolders = Number(rival?.holderCount || 0);
-      const rivalFees = Number(rival?.fees || 0);
-      if (rivalHolders < PVP_MIN_HOLDERS || rivalFees < PVP_MIN_GLOBAL_FEES_SOL) continue;
-
-      const rivalPool = await findRivalPool(rival.id).catch(() => null);
-      if (!rivalPool) continue;
-
-      pool.is_pvp = true;
-      pool.pvp_risk = "high";
-      pool.pvp_symbol = pool.base?.symbol || symbol;
-      pool.pvp_rival_name = rival?.name || pool.pvp_symbol;
-      pool.pvp_rival_mint = rival.id;
-      pool.pvp_rival_pool = rivalPool.address;
-      pool.pvp_rival_tvl = round(Number(rivalPool.tvl || 0));
-      pool.pvp_rival_holders = rivalHolders;
-      pool.pvp_rival_fees = Number(rivalFees.toFixed(2));
-      log("screening", `PVP guard: ${pool.name} has active rival ${pool.pvp_rival_name} (${rival.id.slice(0, 8)})`);
-      break;
-    }
-  }));
-}
 
 
 
@@ -101,7 +21,6 @@ export async function discoverPools({
   const filters = [
     "base_token_has_critical_warnings=false",
     "quote_token_has_critical_warnings=false",
-    s.excludeHighSupplyConcentration ? "base_token_has_high_supply_concentration=false" : null,
     "base_token_has_high_single_ownership=false",
     "pool_type=dlmm",
     `base_token_market_cap>=${s.minMcap}`,
@@ -109,17 +28,14 @@ export async function discoverPools({
     `base_token_holders>=${s.minHolders}`,
     `volume>=${s.minVolume}`,
     `tvl>=${s.minTvl}`,
-    s.maxTvl != null ? `tvl<=${s.maxTvl}` : null,
+    `tvl<=${s.maxTvl}`,
     `dlmm_bin_step>=${s.minBinStep}`,
     `dlmm_bin_step<=${s.maxBinStep}`,
     `fee_active_tvl_ratio>=${s.minFeeActiveTvlRatio}`,
     `base_token_organic_score>=${s.minOrganic}`,
-    `quote_token_organic_score>=${s.minQuoteOrganic}`,
+    "quote_token_organic_score>=60",
     s.minTokenAgeHours != null ? `base_token_created_at<=${Date.now() - s.minTokenAgeHours * 3_600_000}` : null,
     s.maxTokenAgeHours != null ? `base_token_created_at>=${Date.now() - s.maxTokenAgeHours * 3_600_000}` : null,
-    Array.isArray(s.allowedLaunchpads) && s.allowedLaunchpads.length > 0
-      ? `base_token_launchpad=[${s.allowedLaunchpads.join(",")}]`
-      : null,
   ].filter(Boolean).join("&&");
 
   const url = `${POOL_DISCOVERY_BASE}/pools?` +
@@ -138,20 +54,8 @@ export async function discoverPools({
 
   const condensed = (data.data || []).map(condensePool);
 
-  // SOL-only filter — drop non-SOL quote pairs (e.g. TOKEN-USDC, TOKEN-USDT)
-  const SOL_MINT = "So11111111111111111111111111111111111111112";
-  const preFiltered = s.solOnlyPairs
-    ? condensed.filter((p) => {
-        if (p.quote?.mint !== SOL_MINT) {
-          log("screening", `SOL-only filter: dropped ${p.name} (quote: ${p.quote?.symbol})`);
-          return false;
-        }
-        return true;
-      })
-    : condensed;
-
   // Hard-filter blacklisted tokens and blocked deployers (what pool discovery already gave us)
-  let pools = preFiltered.filter((p) => {
+  let pools = condensed.filter((p) => {
     if (isBlacklisted(p.base?.mint)) {
       log("blacklist", `Filtered blacklisted token ${p.base?.symbol} (${p.base?.mint?.slice(0, 8)}) in pool ${p.name}`);
       return false;
@@ -163,7 +67,7 @@ export async function discoverPools({
     return true;
   });
 
-  const filtered = preFiltered.length - pools.length;
+  const filtered = condensed.length - pools.length;
   if (filtered > 0) log("blacklist", `Filtered ${filtered} pool(s) with blacklisted tokens/devs`);
 
   // If pool discovery didn't supply dev field, batch-fetch from Jupiter for any pools
@@ -212,6 +116,7 @@ export async function discoverPools({
 export async function getTopCandidates({ limit = 10 } = {}) {
   const { config } = await import("../config.js");
   const { pools } = await discoverPools({ page_size: 50 });
+  const filteredOut = [];
 
   // Exclude pools where the wallet already has an open position
   const { getMyPositions } = await import("./dlmm.js");
@@ -219,49 +124,42 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   const occupiedPools = new Set(positions.map((p) => p.pool));
   const occupiedMints = new Set(positions.map((p) => p.base_mint).filter(Boolean));
 
-  const { isPoolOnCooldown } = await import("../pool-memory.js");
-
-  // Quality hard-filter — applied after API, before LLM sees candidates
-  // API uses loose thresholds to maximize discovery; this enforces the real quality bar
-  const qs = config.screening;
-  const qualityFiltered = pools.filter((p) => {
-    if (occupiedPools.has(p.pool)) return false;
-    if (occupiedMints.has(p.base?.mint)) return false;
-    if (isPoolOnCooldown(p.pool)) {
-      log("screening", `Cooldown: skipping ${p.name} (recently closed)`);
-      return false;
-    }
-    if ((p.base?.organic ?? 0) < qs.qualityMinOrganic) {
-      log("screening", `Quality filter: dropped ${p.name} — organic ${p.base?.organic} < ${qs.qualityMinOrganic}`);
-      return false;
-    }
-    if ((p.holders ?? 0) < qs.qualityMinHolders) {
-      log("screening", `Quality filter: dropped ${p.name} — holders ${p.holders} < ${qs.qualityMinHolders}`);
-      return false;
-    }
-    if ((p.fee_active_tvl_ratio ?? 0) < qs.qualityMinFeeRatio) {
-      log("screening", `Quality filter: dropped ${p.name} — fee/tvl ${p.fee_active_tvl_ratio} < ${qs.qualityMinFeeRatio}`);
-      return false;
-    }
-    return true;
-  });
-
-  // Score and take top N
-  const eligible = qualityFiltered
-    .sort((a, b) => scoreCandidate(b) - scoreCandidate(a))
-    .slice(0, qs.qualityTopN ?? limit);
+  const eligible = pools
+    .filter((p) => {
+      if (occupiedPools.has(p.pool)) {
+        pushFilteredReason(filteredOut, p, "already have an open position in this pool");
+        return false;
+      }
+      if (occupiedMints.has(p.base?.mint)) {
+        pushFilteredReason(filteredOut, p, "already holding this base token in another pool");
+        return false;
+      }
+      if (isPoolOnCooldown(p.pool)) {
+        log("screening", `Filtered cooldown pool ${p.name} (${p.pool.slice(0, 8)})`);
+        pushFilteredReason(filteredOut, p, "pool cooldown active");
+        return false;
+      }
+      if (isBaseMintOnCooldown(p.base?.mint)) {
+        log("screening", `Filtered cooldown token ${p.base?.symbol} (${p.base?.mint?.slice(0, 8)})`);
+        pushFilteredReason(filteredOut, p, "token cooldown active");
+        return false;
+      }
+      return true;
+    })
+    .slice(0, limit);
 
   if (config.screening.avoidPvpSymbols && eligible.length > 0) {
     await enrichPvpRisk(eligible);
     if (config.screening.blockPvpSymbols) {
       const before = eligible.length;
+      const pvpRemoved = eligible.filter((p) => p.is_pvp);
+      pvpRemoved.forEach((p) => pushFilteredReason(filteredOut, p, "PVP hard filter"));
       eligible.splice(0, eligible.length, ...eligible.filter((p) => !p.is_pvp));
       if (eligible.length < before) {
         log("screening", `PVP hard filter removed ${before - eligible.length} pool(s)`);
       }
     }
   }
-
   // Enrich with OKX data — advanced info (risk/bundle/sniper) + ATH price (no API key required)
   if (eligible.length > 0) {
     const { getAdvancedInfo, getPriceInfo, getClusterList, getRiskFlags } = await import("./okx.js");
@@ -321,7 +219,11 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     }
     // Wash trading hard filter — fake volume = misleading fee yield
     eligible.splice(0, eligible.length, ...eligible.filter((p) => {
-      if (p.is_wash) { log("screening", `Risk filter: dropped ${p.name} — wash trading flagged`); return false; }
+      if (p.is_wash) {
+        log("screening", `Risk filter: dropped ${p.name} — wash trading flagged`);
+        pushFilteredReason(filteredOut, p, "wash trading flagged");
+        return false;
+      }
       return true;
     }));
 
@@ -334,6 +236,7 @@ export async function getTopCandidates({ limit = 10 } = {}) {
         if (p.price_vs_ath_pct == null) return true; // no data → don't filter
         if (p.price_vs_ath_pct > threshold) {
           log("screening", `ATH filter: dropped ${p.name} — ${p.price_vs_ath_pct}% of ATH (limit: ${threshold}%)`);
+          pushFilteredReason(filteredOut, p, `${p.price_vs_ath_pct}% of ATH > ${threshold}% limit`);
           return false;
         }
         return true;
@@ -346,6 +249,7 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     const filtered = eligible.filter((p) => {
       if (p.dev && isDevBlocked(p.dev)) {
         log("dev_blocklist", `Filtered blocked deployer (okx) ${p.dev.slice(0, 8)} token ${p.base?.symbol}`);
+        pushFilteredReason(filteredOut, p, "blocked deployer");
         return false;
       }
       return true;
@@ -357,6 +261,7 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   return {
     candidates: eligible,
     total_screened: pools.length,
+    filtered_examples: filteredOut.slice(0, 3),
   };
 }
 
@@ -455,4 +360,12 @@ function round(n) {
 
 function fix(n, decimals) {
   return n != null ? Number(n.toFixed(decimals)) : null;
+}
+
+function pushFilteredReason(list, pool, reason) {
+  if (!list || !pool) return;
+  list.push({
+    name: pool.name || `${pool.base?.symbol || "?"}-${pool.quote?.symbol || "?"}`,
+    reason,
+  });
 }
