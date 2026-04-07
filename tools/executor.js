@@ -449,15 +449,15 @@ async function runSafetyChecks(name, args) {
         }
       }
 
-      // Check active bin placement — if price is at or near the top of range (bins_above=0),
-      // require at least 10 bins above to avoid immediate OOR on any upward movement.
-      // Rule: if bins_above < 10 AND bins_below >= 50, active bin is effectively at the ceiling.
+      // Weighted bid-ask safety: require bins on both sides for balanced fee capture.
+      // Minimum bins_above = 20% of bins_below to ensure upside buffer against OOR.
       const binsBelow = args.bins_below ?? 0;
       const binsAbove = args.bins_above ?? 0;
-      if (binsAbove < 10 && binsBelow >= 50) {
+      const minAbove = Math.max(5, Math.round(binsBelow * 0.2));
+      if (binsBelow >= 20 && binsAbove < minAbove) {
         return {
           pass: false,
-          reason: `Range placement rejected: bins_below=${binsBelow} with bins_above=${binsAbove} places price at the very top of the range — any upward tick causes immediate OOR. Set bins_above to at least 10 to provide an upside buffer.`,
+          reason: `Range placement rejected: bins_below=${binsBelow} with bins_above=${binsAbove} is too one-sided. Use weighted bid-ask: set bins_above to at least ${minAbove} (20% of bins_below).`,
         };
       }
 
