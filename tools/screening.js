@@ -247,8 +247,21 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     if (eligible.length < before) log("dev_blocklist", `Filtered ${before - eligible.length} pool(s) via OKX creator check`);
   }
 
+  // ── Score and rank candidates ────────────────────────────────
+  for (const pool of eligible) {
+    const smartWalletsPresent = !!(pool.kol_in_clusters || pool.smart_money_buy);
+    const { score, breakdown } = scoreCandidate(pool, pool.global_fees_sol ?? null, smartWalletsPresent);
+    pool.score = score;
+    pool.score_breakdown = breakdown;
+    pool.score_label = score >= 60 ? "DEPLOY" : score >= 40 ? "CAUTION" : "SKIP";
+  }
+
+  eligible.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+
+  log("screening", `Scored ${eligible.length} candidate(s): ${eligible.map((p) => `${p.name}=${p.score}`).join(", ")}`);
+
   return {
-    candidates: eligible,
+    candidates: eligible.slice(0, limit),
     total_screened: pools.length,
     filtered_examples: filteredOut.slice(0, 3),
   };
@@ -341,6 +354,93 @@ function condensePool(p) {
     swap_count: p.swap_count,
     unique_traders: p.unique_traders,
   };
+}
+
+/**
+ * Score a condensed pool candidate for LP quality.
+ * Returns { score, breakdown } where score is 0-100+.
+ *
+ * Framework based on DLMM profitability dynamics:
+ *   P&L = fee_earned - IL
+ *   → Maximize: fee rate, organic activity, smart money signals
+ *   → Minimize: IL risk (volatility, dump signals, concentration)
+ *
+ * Thresholds: ≥60 = deploy, 40-59 = caution, <40 = skip
+ */
+function scoreCandidate(pool, globalFeesSol = null, smartWalletsPresent = false) {
+  const breakdown = {};
+  let score = 0;
+
+  // ── Fee/TVL ratio (35 pts max) ───────────────────────────────
+  // Primary predictor of fee income. Scaled relative to 1% (good for 1h).
+  const feeTvl = Number(pool.fee_active_tvl_ratio || 0);
+  const feePts = Math.min(35, Math.round(feeTvl / 1.0 * 35));
+  score += feePts;
+  breakdown.fee_tvl = `${feeTvl}% → +${feePts}`;
+
+  // ── Global fees in SOL (20 pts max) ─────────────────────────
+  // Proves lifetime organic activity — hard to fake.
+  const feesSol = Number(globalFeesSol || 0);
+  const feesSolPts = feesSol >= 100 ? 20 : feesSol >= 30 ? 10 : 0;
+  score += feesSolPts;
+  breakdown.global_fees_sol = `${feesSol.toFixed(0)} SOL → +${feesSolPts}`;
+
+  // ── Organic score (15 pts max) ────────────────────────────────
+  // Filters bot-inflated volume. Scaled from 50 (min) to 100 (max).
+  const organic = Number(pool.organic_score || 0);
+  const organicPts = organic < 50 ? 0 : Math.min(15, Math.round((organic - 50) / 50 * 15));
+  score += organicPts;
+  breakdown.organic = `${organic} → +${organicPts}`;
+
+  // ── Smart wallets present (10 pts) ───────────────────────────
+  // KOL/alpha wallets entering = strong lead indicator.
+  const swPts = smartWalletsPresent ? 10 : 0;
+  score += swPts;
+  breakdown.smart_wallets = smartWalletsPresent ? "+10" : "0";
+
+  // ── On-chain signals (10 pts max) ────────────────────────────
+  // dev_sold_all = no dev dump risk (+5), smart_money_buy tag = accumulation (+5)
+  const tags = pool.okx_tags || [];
+  const devSoldAll = tags.includes("dev_sold_all") || pool.dev_sold_all;
+  const smartMoneyBuy = tags.includes("smart_money_buy") || pool.smart_money_buy;
+  const onChainPts = (devSoldAll ? 5 : 0) + (smartMoneyBuy ? 5 : 0);
+  score += onChainPts;
+  breakdown.on_chain = `dev_sold=${devSoldAll} smart_money=${smartMoneyBuy} → +${onChainPts}`;
+
+  // ── Token age bonus (5 pts max) ──────────────────────────────
+  // Mature tokens are more stable. <48h already hard-filtered.
+  const ageHours = Number(pool.token_age_hours || 0);
+  const agePts = ageHours >= 720 ? 5 : ageHours >= 168 ? 3 : 0; // 30d=5, 7d=3
+  score += agePts;
+  breakdown.token_age = `${Math.round(ageHours / 24)}d → +${agePts}`;
+
+  // ── Volatility bonus/penalty (+5 to -15) ─────────────────────
+  // Low volatility = stays in range (fees compound).
+  // High volatility = OOR fast, IL accumulates.
+  const vol = Number(pool.volatility || 0);
+  const volPts = vol <= 3 ? 5 : vol <= 5 ? 0 : vol <= 7 ? -10 : -15;
+  score += volPts;
+  breakdown.volatility = `${vol} → ${volPts >= 0 ? "+" : ""}${volPts}`;
+
+  // ── Price momentum penalty (0 to -25) ───────────────────────
+  // Already pumped = exit liquidity. Dumping = distribution phase.
+  const priceChange = Number(pool.price_change_pct || 0);
+  let momentumPts = 0;
+  if (priceChange > 50) momentumPts = -25;        // extreme pump — definitely exit liq
+  else if (priceChange > 20) momentumPts = -15;    // pumped — likely exit liq
+  else if (priceChange < -10) momentumPts = -25;   // heavy dump — distribution
+  else if (priceChange < -5) momentumPts = -10;    // weak — caution
+  score += momentumPts;
+  breakdown.price_1h = `${priceChange}% → ${momentumPts}`;
+
+  // ── Holder concentration penalty (0 to -20) ──────────────────
+  // Concentrated supply = coordinated dump risk.
+  const top10 = Number(pool.top10_pct || 0);
+  const top10Pts = top10 > 70 ? -20 : top10 > 55 ? -10 : 0;
+  score += top10Pts;
+  breakdown.top10_pct = `${top10}% → ${top10Pts}`;
+
+  return { score: Math.round(score), breakdown };
 }
 
 function round(n) {
