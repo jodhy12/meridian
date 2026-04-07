@@ -50,7 +50,7 @@ export async function discoverPools({
     ...baseFilters,
     `base_token_holders>=50`,
     `tvl>=500`,
-    `fee_active_tvl_ratio>=0.02`,
+    `fee_active_tvl_ratio>=${Math.max(0.02, (s.minFeeActiveTvlRatio || 0.4) * 0.25)}`,
   ].join("&&");
 
   // Scan multiple categories in parallel
@@ -452,11 +452,12 @@ function scoreCandidate(pool, smartWalletsPresent = false) {
   score += agePts;
   breakdown.token_age = `${Math.round(ageHours / 24)}d → +${agePts}`;
 
-  // ── Volatility bonus/penalty (+5 to -15) ─────────────────────
+  // ── Volatility bonus/penalty (+5 to -35) ─────────────────────
   // Low volatility = stays in range (fees compound).
   // High volatility = OOR fast, IL accumulates.
+  // Data: vol>5 → BURNIE -7.73%, Freg -4.36%. vol≤3 → mostly profitable.
   const vol = Number(pool.volatility || 0);
-  const volPts = vol <= 3 ? 5 : vol <= 5 ? 0 : vol <= 7 ? -10 : -15;
+  const volPts = vol <= 3 ? 5 : vol <= 5 ? 0 : vol <= 7 ? -25 : -35;
   score += volPts;
   breakdown.volatility = `${vol} → ${volPts >= 0 ? "+" : ""}${volPts}`;
 
