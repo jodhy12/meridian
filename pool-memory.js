@@ -166,14 +166,6 @@ export function recordPoolDeploy(poolAddress, deployData) {
     log("pool-memory", `Cooldown set for ${entry.name} until ${cooldownUntil} (pumped above range)`);
   }
 
-  // L24: 3 consecutive losses = extended 7-day cooldown
-  const last3 = entry.deploys.slice(-3);
-  const consecutiveLosses = last3.length === 3 && last3.every((d) => (d.pnl_pct ?? 0) < 0);
-  if (consecutiveLosses) {
-    const cooldownUntil = setPoolCooldown(entry, 168, "3 consecutive losses");
-    log("pool-memory", `⚠️ ${entry.name} — 3 consecutive losses detected, extended cooldown 7 days until ${cooldownUntil}`);
-  }
-
   const oorTriggerCount = config.management.oorCooldownTriggerCount ?? 3;
   const oorCooldownHours = config.management.oorCooldownHours ?? 12;
   const recentDeploys = entry.deploys.slice(-oorTriggerCount);
@@ -201,16 +193,7 @@ export function isPoolOnCooldown(poolAddress) {
   const entry = db[poolAddress];
   if (!entry) return false;
 
-  // Hard block 1: explicit cooldown timer
   if (entry.cooldown_until && new Date(entry.cooldown_until) > new Date()) return true;
-
-  // Hard block 2: chronic underperformer — 5+ deploys with avg PnL < -0.5%
-  // Code-level block — LLM cannot override this regardless of current metrics
-  if (entry.total_deploys >= 5 && entry.avg_pnl_pct < -0.5) {
-    log("pool-memory", `Hard block: ${entry.name} is a chronic underperformer (${entry.total_deploys} deploys, avg PnL ${entry.avg_pnl_pct}%) — skipping`);
-    return true;
-  }
-
   return false;
 }
 
