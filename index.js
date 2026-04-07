@@ -3,7 +3,8 @@ import cron from "node-cron";
 import readline from "readline";
 import { agentLoop } from "./agent.js";
 import { log } from "./logger.js";
-import { getMyPositions, closePosition, getActiveBin } from "./tools/dlmm.js";
+import { getMyPositions, closePosition, deployPosition } from "./tools/dlmm.js";
+import { getTechnicalSignals } from "./tools/ohlcv.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
@@ -12,10 +13,8 @@ import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled, createLiveMessage } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
-import { getActiveStrategy } from "./strategy-library.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
-import { checkSmartWalletsOnPool } from "./smart-wallets.js";
-import { getTokenNarrative, getTokenInfo } from "./tools/token.js";
+import { getTokenInfo } from "./tools/token.js";
 
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
@@ -72,16 +71,6 @@ function stripThink(text) {
   return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
 }
 
-function sanitizeUntrustedPromptText(text, maxLen = 500) {
-  if (!text) return null;
-  const cleaned = String(text)
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/\s+/g, " ")
-    .replace(/[<>`]/g, "")
-    .trim()
-    .slice(0, maxLen);
-  return cleaned ? JSON.stringify(cleaned) : null;
-}
 
 function schedulePeakConfirmation(positionAddress) {
   if (!positionAddress || _peakConfirmTimers.has(positionAddress)) return;
@@ -417,197 +406,131 @@ export async function runScreeningCycle({ silent = false } = {}) {
     liveMessage = await createLiveMessage("🔍 Screening Cycle", "Scanning candidates...");
   }
   timers.screeningLastRun = Date.now();
-  log("cron", `Starting screening cycle [model: ${config.llm.screeningModel}]`);
+  log("cron", `Starting screening cycle [AUTO-DEPLOY mode]`);
   try {
-    // Reuse pre-fetched balance — no extra RPC call needed
     const currentBalance = preBalance;
     const deployAmount = computeDeployAmount(currentBalance.sol);
     log("cron", `Computed deploy amount: ${deployAmount} SOL (wallet: ${currentBalance.sol} SOL)`);
 
-    // Load active strategy
-    const activeStrategy = getActiveStrategy();
-    const strategyBlock = activeStrategy
-      ? `ACTIVE STRATEGY: ${activeStrategy.name} — LP: ${activeStrategy.lp_strategy} | bins_above: ${activeStrategy.range?.bins_above ?? 0} (FIXED — never change) | deposit: ${activeStrategy.entry?.single_side === "sol" ? "SOL only (amount_y, amount_x=0)" : "dual-sided"} | best for: ${activeStrategy.best_for}`
-      : `No active strategy — use default bid_ask, bins_above: 0, SOL only.`;
-
-    // Fetch top candidates, then recon each sequentially with a small delay to avoid 429s
+    // ── Step 1: Get scored candidates ───────────────────────────
     const topCandidates = await getTopCandidates({ limit: 10 }).catch(() => null);
-    const candidates = (topCandidates?.candidates || topCandidates?.pools || []).slice(0, 10);
-    const earlyFilteredExamples = topCandidates?.filtered_examples || [];
+    const candidates = (topCandidates?.candidates || []).slice(0, 10);
 
-    const allCandidates = [];
-    for (const pool of candidates) {
-      const mint = pool.base?.mint;
-      const [smartWallets, narrative, tokenInfo] = await Promise.allSettled([
-        checkSmartWalletsOnPool({ pool_address: pool.pool }),
-        mint ? getTokenNarrative({ mint }) : Promise.resolve(null),
-        mint ? getTokenInfo({ query: mint }) : Promise.resolve(null),
-      ]);
-      allCandidates.push({
-        pool,
-        sw: smartWallets.status === "fulfilled" ? smartWallets.value : null,
-        n: narrative.status === "fulfilled" ? narrative.value : null,
-        ti: tokenInfo.status === "fulfilled" ? tokenInfo.value?.results?.[0] : null,
-        mem: recallForPool(pool.pool),
-      });
-      await new Promise(r => setTimeout(r, 150)); // avoid 429s
+    if (candidates.length === 0) {
+      screenReport = `⛔ NO DEPLOY\n\nNo candidates found after filtering.`;
+      return screenReport;
     }
 
-    // Hard filters after token recon — block launchpads and excessive Jupiter bot holders
-    const filteredOut = [];
-    const passing = allCandidates.filter(({ pool, ti }) => {
+    // ── Step 2: Token recon + launchpad/bot filter ──────────────
+    const recon = [];
+    for (const pool of candidates) {
+      const mint = pool.base?.mint;
+      const [tiResult] = await Promise.allSettled([
+        mint ? getTokenInfo({ query: mint }) : Promise.resolve(null),
+      ]);
+      const ti = tiResult.status === "fulfilled" ? tiResult.value?.results?.[0] : null;
+
+      // Hard filters
       const launchpad = ti?.launchpad ?? null;
-      if (launchpad && config.screening.allowedLaunchpads?.length > 0 && !config.screening.allowedLaunchpads.includes(launchpad)) {
-        log("screening", `Skipping ${pool.name} — launchpad ${launchpad} not in allow-list`);
-        filteredOut.push({ name: pool.name, reason: `launchpad ${launchpad} not in allow-list` });
-        return false;
-      }
-      if (launchpad && config.screening.blockedLaunchpads.includes(launchpad)) {
-        log("screening", `Skipping ${pool.name} — blocked launchpad (${launchpad})`);
-        filteredOut.push({ name: pool.name, reason: `blocked launchpad (${launchpad})` });
-        return false;
+      if (launchpad && config.screening.blockedLaunchpads?.includes(launchpad)) {
+        log("screening", `Auto-deploy filter: ${pool.name} — blocked launchpad (${launchpad})`);
+        continue;
       }
       const botPct = ti?.audit?.bot_holders_pct;
       const maxBotHoldersPct = config.screening.maxBotHoldersPct;
       if (botPct != null && maxBotHoldersPct != null && botPct > maxBotHoldersPct) {
-        log("screening", `Bot-holder filter: dropped ${pool.name} — bots ${botPct}% > ${maxBotHoldersPct}%`);
-        filteredOut.push({ name: pool.name, reason: `bot holders ${botPct}% > ${maxBotHoldersPct}%` });
-        return false;
+        log("screening", `Auto-deploy filter: ${pool.name} — bots ${botPct}% > ${maxBotHoldersPct}%`);
+        continue;
       }
-      return true;
-    });
 
-    if (passing.length === 0) {
-      const examples = filteredOut.slice(0, 3)
-        .map((entry) => `- ${entry.name}: ${entry.reason}`)
-        .join("\n");
-      const combined = filteredOut.length > 0 ? filteredOut : earlyFilteredExamples;
-      const combinedExamples = combined.slice(0, 3)
-        .map((entry) => `- ${entry.name}: ${entry.reason}`)
-        .join("\n");
-      screenReport = combinedExamples
-        ? `No candidates available.\nFiltered examples:\n${combinedExamples}`
-        : `No candidates available (all filtered by launchpad / holder-quality rules).`;
+      recon.push({ pool, ti });
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    if (recon.length === 0) {
+      screenReport = `⛔ NO DEPLOY\n\nAll candidates filtered by launchpad/bot rules.`;
       return screenReport;
     }
 
-    // Pre-fetch active_bin for all passing candidates in parallel
-    const activeBinResults = await Promise.allSettled(
-      passing.map(({ pool }) => getActiveBin({ pool_address: pool.pool }))
-    );
+    // ── Step 3: Walk candidates by score (highest first) ────────
+    const MIN_SCORE = config.screening.autoDeployMinScore ?? 40;
+    let deployed = false;
 
-    // Build compact candidate blocks
-    const candidateBlocks = passing.map(({ pool, sw, n, ti, mem }, i) => {
-      const botPct = ti?.audit?.bot_holders_pct ?? "?";
-      const top10Pct = ti?.audit?.top_holders_pct ?? "?";
-      const feesSol = ti?.global_fees_sol ?? "?";
-      const launchpad = ti?.launchpad ?? null;
-      const priceChange = ti?.stats_1h?.price_change;
-      const netBuyers = ti?.stats_1h?.net_buyers;
-      const activeBin = activeBinResults[i]?.status === "fulfilled" ? activeBinResults[i].value?.binId : null;
+    for (const { pool, ti } of recon) {
+      if (pool.score < MIN_SCORE) {
+        log("screening", `Auto-deploy skip: ${pool.name} — score ${pool.score} < ${MIN_SCORE}`);
+        break; // sorted by score desc, so no need to check further
+      }
 
-      // OKX signals
-      const okxParts = [
-        pool.risk_level     != null ? `risk=${pool.risk_level}`               : null,
-        pool.bundle_pct     != null ? `bundle=${pool.bundle_pct}%`            : null,
-        pool.sniper_pct     != null ? `sniper=${pool.sniper_pct}%`            : null,
-        pool.suspicious_pct != null ? `suspicious=${pool.suspicious_pct}%`    : null,
-        pool.new_wallet_pct != null ? `new_wallets=${pool.new_wallet_pct}%`   : null,
-        pool.is_rugpull != null ? `rugpull=${pool.is_rugpull ? "YES" : "NO"}` : null,
-        pool.is_wash != null ? `wash=${pool.is_wash ? "YES" : "NO"}` : null,
-      ].filter(Boolean).join(", ");
-      const okxUnavailable = !okxParts && pool.price_vs_ath_pct == null;
+      // ── Step 3a: Technical entry check ──────────────────────
+      let techSignals = null;
+      try {
+        techSignals = await getTechnicalSignals({ pool_address: pool.pool, timeframe: "15m" });
+      } catch (e) {
+        log("screening", `Tech signals failed for ${pool.name}: ${e.message} — skipping`);
+        continue;
+      }
 
-      const okxTags = [
-        pool.smart_money_buy    ? "smart_money_buy"    : null,
-        pool.kol_in_clusters    ? "kol_in_clusters"    : null,
-        pool.dex_boost          ? "dex_boost"          : null,
-        pool.dex_screener_paid  ? "dex_screener_paid"  : null,
-        pool.dev_sold_all       ? "dev_sold_all(bullish)" : null,
-      ].filter(Boolean).join(", ");
+      if (techSignals?.error) {
+        log("screening", `Tech signals error for ${pool.name}: ${techSignals.error} — proceeding without`);
+        techSignals = null;
+      }
 
-      const block = [
-        `POOL: ${pool.name} (${pool.pool})`,
-        `  metrics: bin_step=${pool.bin_step}, fee_pct=${pool.fee_pct}%, fee_tvl=${pool.fee_active_tvl_ratio}, vol=$${pool.volume_window}, tvl=$${pool.active_tvl}, volatility=${pool.volatility}, mcap=$${pool.mcap}, organic=${pool.organic_score}${pool.token_age_hours != null ? `, age=${pool.token_age_hours}h` : ""}`,
-        `  audit: top10=${top10Pct}%, bots=${botPct}%, fees=${feesSol}SOL${launchpad ? `, launchpad=${launchpad}` : ""}`,
-        okxParts ? `  okx: ${okxParts}` : okxUnavailable ? `  okx: unavailable` : null,
-        okxTags  ? `  tags: ${okxTags}` : null,
-        pool.price_vs_ath_pct != null ? `  ath: price_vs_ath=${pool.price_vs_ath_pct}%${pool.top_cluster_trend ? `, top_cluster=${pool.top_cluster_trend}` : ""}` : null,
-        `  smart_wallets: ${sw?.in_pool?.length ?? 0} present${sw?.in_pool?.length ? ` → CONFIDENCE BOOST (${sw.in_pool.map(w => w.name).join(", ")})` : ""}`,
-        activeBin != null ? `  active_bin: ${activeBin}` : null,
-        priceChange != null ? `  1h: price${priceChange >= 0 ? "+" : ""}${priceChange}%, net_buyers=${netBuyers ?? "?"}` : null,
-        n?.narrative ? `  narrative_untrusted: ${sanitizeUntrustedPromptText(n.narrative, 500)}` : `  narrative_untrusted: none`,
-        mem ? `  memory_untrusted: ${sanitizeUntrustedPromptText(mem, 500)}` : null,
-      ].filter(Boolean).join("\n");
+      if (techSignals?.entry_warnings?.length > 0) {
+        log("screening", `Auto-deploy skip: ${pool.name} — entry warnings: ${techSignals.entry_warnings.join(", ")}`);
+        continue;
+      }
 
-      return block;
-    });
+      // ── Step 3b: Compute bins (centered 50/50) ──────────────
+      const vol = Number(pool.volatility || 3);
+      const totalBins = Math.min(90, Math.max(35, Math.round(35 + (vol / 5) * 55)));
+      const suggestedBins = techSignals?.suggested_bins_below;
+      const binsBelow = suggestedBins || Math.round(totalBins * 0.5);
+      const binsAbove = suggestedBins || Math.round(totalBins * 0.5);
 
-    const { content } = await agentLoop(`
-SCREENING CYCLE
-${strategyBlock}
-Positions: ${prePositions.total_positions}/${config.risk.maxPositions} | SOL: ${currentBalance.sol.toFixed(3)} | Deploy: ${deployAmount} SOL
+      // ── Step 3c: Deploy ──────────────────────────────────────
+      log("screening", `Auto-deploy: ${pool.name} | score=${pool.score} | bins=${binsBelow}/${binsAbove} | ${deployAmount} SOL`);
 
-PRE-LOADED CANDIDATES (${passing.length} pools):
-${candidateBlocks.join("\n\n")}
+      try {
+        const result = await deployPosition({
+          pool_address: pool.pool,
+          amount_y: deployAmount,
+          strategy: "bid_ask",
+          bins_below: binsBelow,
+          bins_above: binsAbove,
+          pool_name: pool.name,
+          bin_step: pool.bin_step,
+          volatility: vol,
+          fee_tvl_ratio: pool.fee_active_tvl_ratio,
+          organic_score: pool.organic_score,
+        });
 
-STEPS:
-1. Pick the best candidate based on narrative quality, smart wallets, and pool metrics.
-2. Call deploy_position (active_bin is pre-fetched above — no need to call get_active_bin).
-   bins_below = round(35 + (volatility/5)*55) clamped to [35,90].
-3. Report in this exact format (no tables, no extra sections):
-   🚀 DEPLOYED
+        if (result?.error || result?.blocked) {
+          log("screening", `Auto-deploy failed for ${pool.name}: ${result.error || result.reason}`);
+          continue; // try next candidate
+        }
 
-   <pool name>
-   <pool address>
+        const top10Pct = ti?.audit?.top_holders_pct ?? "?";
+        const botPctDisplay = ti?.audit?.bot_holders_pct ?? "?";
+        const feesSol = ti?.global_fees_sol ?? "?";
 
-   ◎ <deploy amount> SOL | <strategy> | bin <active_bin>
-   Range: <minPrice> → <maxPrice>
-   Downside buffer: <negative %>
+        screenReport = `🚀 DEPLOYED (auto)\n\n${pool.name}\n${pool.pool}\n\n◎ ${deployAmount} SOL | bid_ask | score=${pool.score}\nRange: bins ${binsBelow}↓ ${binsAbove}↑\n\nMARKET\nFee/TVL: ${pool.fee_active_tvl_ratio}%\nVolume: $${pool.volume_window}\nTVL: $${pool.active_tvl}\nVolatility: ${vol}\nOrganic: ${pool.organic_score}\nMcap: $${pool.mcap}\nAge: ${pool.token_age_hours ?? "?"}h\n\nAUDIT\nTop10: ${top10Pct}%\nBots: ${botPctDisplay}%\nFees: ${feesSol} SOL\n\nSCORE BREAKDOWN\n${Object.entries(pool.score_breakdown || {}).map(([k, v]) => `${k}: ${v}`).join("\n")}`;
+        deployed = true;
+        break;
+      } catch (e) {
+        log("screening", `Auto-deploy exception for ${pool.name}: ${e.message}`);
+        continue;
+      }
+    }
 
-   MARKET
-   Fee/TVL: <x>%
-   Volume: $<x>
-   TVL: $<x>
-   Volatility: <x>
-   Organic: <x>
-   Mcap: $<x>
-   Age: <x>h
-
-   AUDIT
-   Top10: <x>%
-   Bots: <x>%
-   Fees paid: <x> SOL
-   Smart wallets: <names or none>
-
-   RISK
-   <If OKX advanced/risk data exists, list only the fields that actually exist: Risk level, Bundle, Sniper, Suspicious, ATH distance, Rugpull, Wash.>
-   <If only rugpull/wash exist, list just those.>
-   <If OKX enrichment is missing, write exactly: OKX: unavailable>
-
-   WHY THIS WON
-   <2-4 concise sentences on why this pool won, key risks, and why it still beat the alternatives>
-4. If no pool qualifies, report in this exact format instead:
-   ⛔ NO DEPLOY
-
-   Cycle finished with no valid entry.
-
-   BEST LOOKING CANDIDATE
-   <name or none>
-
-   WHY SKIPPED
-   <2-4 concise sentences explaining why nothing was good enough>
-
-   REJECTED
-   <short flat list of top candidate names and why they were skipped>
-IMPORTANT:
-- Never write "unknown" for OKX. Use real values, omit missing fields, or write exactly "OKX: unavailable".
-- Keep the whole report compact and highly scannable for Telegram.
-      `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048, {
-        onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
-        onToolFinish: async ({ name, result, success }) => { await liveMessage?.toolFinish(name, result, success); },
-      });
-    screenReport = content;
+    if (!deployed) {
+      const best = recon[0]?.pool;
+      const reasons = recon.slice(0, 3).map(({ pool }) => {
+        if (pool.score < MIN_SCORE) return `${pool.name}: score ${pool.score} < ${MIN_SCORE}`;
+        return `${pool.name}: score=${pool.score}, tech/entry check failed`;
+      }).join("\n");
+      screenReport = `⛔ NO DEPLOY\n\nCycle finished with no valid entry.\n\nBEST CANDIDATE: ${best?.name ?? "none"} (score=${best?.score ?? 0})\n\nREJECTED:\n${reasons}`;
+    }
   } catch (error) {
     log("cron_error", `Screening cycle failed: ${error.message}`);
     screenReport = `Screening cycle failed: ${error.message}`;
