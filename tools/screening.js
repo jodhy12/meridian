@@ -145,7 +145,7 @@ export async function discoverPools({
   }
 
   return {
-    total: data.total,
+    total: allPools.length,
     pools,
   };
 }
@@ -291,7 +291,7 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   // ── Score and rank candidates ────────────────────────────────
   for (const pool of eligible) {
     const smartWalletsPresent = !!(pool.kol_in_clusters || pool.smart_money_buy);
-    const { score, breakdown } = scoreCandidate(pool, pool.global_fees_sol ?? null, smartWalletsPresent);
+    const { score, breakdown } = scoreCandidate(pool, smartWalletsPresent);
     pool.score = score;
     pool.score_breakdown = breakdown;
     pool.score_label = score >= 60 ? "DEPLOY" : score >= 40 ? "CAUTION" : "SKIP";
@@ -408,28 +408,25 @@ function condensePool(p) {
  *
  * Thresholds: ≥60 = deploy, 40-59 = caution, <40 = skip
  */
-function scoreCandidate(pool, globalFeesSol = null, smartWalletsPresent = false) {
+function scoreCandidate(pool, smartWalletsPresent = false) {
   const breakdown = {};
   let score = 0;
 
   // ── Fee/TVL ratio (35 pts max) ───────────────────────────────
-  // Primary predictor of fee income. Scaled relative to 1% (good for 1h).
+  // Primary predictor of fee income. Target scaled per timeframe:
+  // 5m=0.02%, 15m=0.05%, 30m=0.4%, 1h=1.0%, 4h=0.8%, 24h=3%
+  const timeframe = config.screening.timeframe || "30m";
+  const feeTvlTarget = { "5m": 0.04, "15m": 0.1, "30m": 0.4, "1h": 1.0, "2h": 0.8, "4h": 0.8, "24h": 3.0 }[timeframe] ?? 0.4;
   const feeTvl = Number(pool.fee_active_tvl_ratio || 0);
-  const feePts = Math.min(35, Math.round(feeTvl / 1.0 * 35));
+  const feePts = Math.min(35, Math.round(feeTvl / feeTvlTarget * 35));
   score += feePts;
-  breakdown.fee_tvl = `${feeTvl}% → +${feePts}`;
+  breakdown.fee_tvl = `${feeTvl}% → +${feePts} (target ${feeTvlTarget}%)`;
 
-  // ── Global fees in SOL (20 pts max) ─────────────────────────
-  // Proves lifetime organic activity — hard to fake.
-  const feesSol = Number(globalFeesSol || 0);
-  const feesSolPts = feesSol >= 100 ? 20 : feesSol >= 30 ? 10 : 0;
-  score += feesSolPts;
-  breakdown.global_fees_sol = `${feesSol.toFixed(0)} SOL → +${feesSolPts}`;
-
-  // ── Organic score (15 pts max) ────────────────────────────────
+  // ── Organic score (30 pts max) ────────────────────────────────
   // Filters bot-inflated volume. Scaled from 50 (min) to 100 (max).
+  // Sourced directly from pool discovery API — always available.
   const organic = Number(pool.organic_score || 0);
-  const organicPts = organic < 50 ? 0 : Math.min(15, Math.round((organic - 50) / 50 * 15));
+  const organicPts = organic < 50 ? 0 : Math.min(30, Math.round((organic - 50) / 50 * 30));
   score += organicPts;
   breakdown.organic = `${organic} → +${organicPts}`;
 
