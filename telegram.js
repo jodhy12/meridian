@@ -366,6 +366,17 @@ export async function notifyClose({ pair, pnlUsd, pnlPct, closeReason = "" }) {
   );
 }
 
+export async function notifyTechnicalSignal({ pair, timeframe, rsi2, bbUpper, currentClose, macdGreen, exitReason }) {
+  if (hasActiveLiveMessage()) return;
+  const esc = (s) => String(s ?? "?").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  await sendHTML(
+    `⚡ <b>Technical Exit Signal</b> ${esc(pair)} [${esc(timeframe)}]\n` +
+    `RSI(2): ${rsi2?.toFixed(1) ?? "?"} | BB Upper: ${bbUpper?.toFixed(4) ?? "?"} | Close: ${currentClose?.toFixed(4) ?? "?"}\n` +
+    `MACD green bar: ${macdGreen ? "yes" : "no"}\n` +
+    `Reason: ${esc(exitReason)}`
+  );
+}
+
 export async function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOut, tx }) {
   if (hasActiveLiveMessage()) return;
   await sendHTML(
