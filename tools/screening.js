@@ -148,18 +148,7 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     })
     .slice(0, limit);
 
-  if (config.screening.avoidPvpSymbols && eligible.length > 0) {
-    await enrichPvpRisk(eligible);
-    if (config.screening.blockPvpSymbols) {
-      const before = eligible.length;
-      const pvpRemoved = eligible.filter((p) => p.is_pvp);
-      pvpRemoved.forEach((p) => pushFilteredReason(filteredOut, p, "PVP hard filter"));
-      eligible.splice(0, eligible.length, ...eligible.filter((p) => !p.is_pvp));
-      if (eligible.length < before) {
-        log("screening", `PVP hard filter removed ${before - eligible.length} pool(s)`);
-      }
-    }
-  }
+  // enrichPvpRisk removed — PVP data surfaced via LLM judgment from pool metrics
   // Enrich with OKX data — advanced info (risk/bundle/sniper) + ATH price (no API key required)
   if (eligible.length > 0) {
     const { getAdvancedInfo, getPriceInfo, getClusterList, getRiskFlags } = await import("./okx.js");
