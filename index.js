@@ -3,7 +3,7 @@ import cron from "node-cron";
 import readline from "readline";
 import { agentLoop } from "./agent.js";
 import { log } from "./logger.js";
-import { getMyPositions, closePosition, deployPosition } from "./tools/dlmm.js";
+import { getMyPositions, closePosition } from "./tools/dlmm.js";
 import { getTechnicalSignals } from "./tools/ohlcv.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
@@ -369,180 +369,214 @@ After executing, write a brief one-line result per position.
 }
 
 export async function runScreeningCycle({ silent = false } = {}) {
+  // ── Guard: prevent overlapping cycles ───────────────────────────────────────
   if (_screeningBusy) {
     log("cron", "Screening skipped — previous cycle still running");
     return null;
   }
-  _screeningBusy = true; // set immediately — prevents TOCTOU race with concurrent callers
+  _screeningBusy = true;
   _screeningLastTriggered = Date.now();
 
-  // Hard guards — don't even run the agent if preconditions aren't met
-  let prePositions, preBalance;
   let liveMessage = null;
   let screenReport = null;
+
+  // ── Guard: pre-check positions + balance ────────────────────────────────────
+  let positions, balance;
   try {
-    [prePositions, preBalance] = await Promise.all([getMyPositions({ force: true }), getWalletBalances()]);
-    if (prePositions.total_positions >= config.risk.maxPositions) {
-      log("cron", `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions})`);
-      screenReport = `Screening skipped — max positions reached (${prePositions.total_positions}/${config.risk.maxPositions}).`;
+    [positions, balance] = await Promise.all([
+      getMyPositions({ force: true }),
+      getWalletBalances(),
+    ]);
+
+    if (positions.total_positions >= config.risk.maxPositions) {
+      screenReport = `Screening skipped — max positions reached (${positions.total_positions}/${config.risk.maxPositions}).`;
+      log("cron", screenReport);
       _screeningBusy = false;
       return screenReport;
     }
+
     const minRequired = config.management.deployAmountSol + config.management.gasReserve;
-    const isDryRun = process.env.DRY_RUN === "true";
-    if (!isDryRun && preBalance.sol < minRequired) {
-      log("cron", `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas)`);
-      screenReport = `Screening skipped — insufficient SOL (${preBalance.sol.toFixed(3)} < ${minRequired} needed for deploy + gas).`;
+    if (process.env.DRY_RUN !== "true" && balance.sol < minRequired) {
+      screenReport = `Screening skipped — insufficient SOL (${balance.sol.toFixed(3)} < ${minRequired}).`;
+      log("cron", screenReport);
       _screeningBusy = false;
       return screenReport;
     }
   } catch (e) {
-    log("cron_error", `Screening pre-check failed: ${e.message}`);
     screenReport = `Screening pre-check failed: ${e.message}`;
+    log("cron_error", screenReport);
     _screeningBusy = false;
     return screenReport;
   }
+
+  timers.screeningLastRun = Date.now();
+  log("cron", `Starting screening cycle [model: ${config.llm.screeningModel}]`);
+
   if (!silent && telegramEnabled()) {
     liveMessage = await createLiveMessage("🔍 Screening Cycle", "Scanning candidates...");
   }
-  timers.screeningLastRun = Date.now();
-  log("cron", `Starting screening cycle [AUTO-DEPLOY mode]`);
-  try {
-    const currentBalance = preBalance;
-    const deployAmount = computeDeployAmount(currentBalance.sol);
-    log("cron", `Computed deploy amount: ${deployAmount} SOL (wallet: ${currentBalance.sol} SOL)`);
 
-    // ── Step 1: Get scored candidates ───────────────────────────
-    const topCandidates = await getTopCandidates({ limit: 10 }).catch(() => null);
-    const candidates = (topCandidates?.candidates || []).slice(0, 10);
+  try {
+    const deployAmount = computeDeployAmount(balance.sol);
+    log("cron", `Deploy amount: ${deployAmount} SOL (wallet: ${balance.sol} SOL)`);
+
+    // ── Step 1: Discover + score candidates ─────────────────────────────────
+    const { candidates = [] } = await getTopCandidates({ limit: 10 }).catch(() => ({}));
 
     if (candidates.length === 0) {
-      screenReport = `⛔ NO DEPLOY\n\nNo candidates found after filtering.`;
+      screenReport = `⛔ NO DEPLOY\n\nNo candidates passed discovery filters.`;
       return screenReport;
     }
 
-    // ── Step 2: Token recon + launchpad/bot filter ──────────────
-    const recon = [];
+    log("cron", `Step 1 done — ${candidates.length} scored candidates`);
+
+    // ── Step 2: Enrich each candidate (token info + tech signals + bins) ─────
+    const enriched = [];
     for (const pool of candidates) {
       const mint = pool.base?.mint;
-      const [tiResult] = await Promise.allSettled([
-        mint ? getTokenInfo({ query: mint }) : Promise.resolve(null),
-      ]);
-      const ti = tiResult.status === "fulfilled" ? tiResult.value?.results?.[0] : null;
 
-      // Hard filters
+      // 2a. Token info (launchpad, audit)
+      const tiResult = await getTokenInfo({ query: mint }).catch(() => null);
+      const ti = tiResult?.results?.[0] ?? null;
+
+      // 2b. Hard filter — launchpad
       const launchpad = ti?.launchpad ?? null;
       if (launchpad && config.screening.blockedLaunchpads?.includes(launchpad)) {
-        log("screening", `Auto-deploy filter: ${pool.name} — blocked launchpad (${launchpad})`);
-        continue;
-      }
-      const botPct = ti?.audit?.bot_holders_pct;
-      const maxBotHoldersPct = config.screening.maxBotHoldersPct;
-      if (botPct != null && maxBotHoldersPct != null && botPct > maxBotHoldersPct) {
-        log("screening", `Auto-deploy filter: ${pool.name} — bots ${botPct}% > ${maxBotHoldersPct}%`);
+        log("screening", `Filtered ${pool.name} — blocked launchpad (${launchpad})`);
         continue;
       }
 
-      recon.push({ pool, ti });
-      await new Promise(r => setTimeout(r, 100));
+      // 2c. Hard filter — bot holders
+      const botPct = ti?.audit?.bot_holders_pct;
+      const maxBotPct = config.screening.maxBotHoldersPct;
+      if (botPct != null && maxBotPct != null && botPct > maxBotPct) {
+        log("screening", `Filtered ${pool.name} — bot holders ${botPct}% > ${maxBotPct}%`);
+        continue;
+      }
+
+      // 2d. Technical signals (entry ok? bearish? volume spike?)
+      let tech = null;
+      try {
+        const raw = await getTechnicalSignals({ pool_address: pool.pool, timeframe: "15m" });
+        if (!raw?.error) tech = raw;
+      } catch { /**/ }
+
+      // 2e. Pre-compute bins (centered 50/50, ATR-adjusted if available)
+      const vol = Number(pool.volatility || 3);
+      const totalBins = Math.min(90, Math.max(35, Math.round(35 + (vol / 5) * 55)));
+      const atrBins = tech?.suggested_bins_below ?? null;
+      pool._bins_below = atrBins ?? Math.round(totalBins * 0.5);
+      pool._bins_above = atrBins ?? Math.round(totalBins * 0.5);
+      pool._tech_ok    = !tech?.entry_warnings?.length;
+      pool._tech_warn  = tech?.entry_warnings ?? [];
+      pool._exit_signal = tech?.exit_signal ?? false;
+
+      enriched.push({ pool, ti });
+      await new Promise(r => setTimeout(r, 100)); // GeckoTerminal rate limit
     }
 
-    if (recon.length === 0) {
-      screenReport = `⛔ NO DEPLOY\n\nAll candidates filtered by launchpad/bot rules.`;
+    log("cron", `Step 2 done — ${enriched.length} candidates after enrichment filters`);
+
+    if (enriched.length === 0) {
+      screenReport = `⛔ NO DEPLOY\n\nAll candidates filtered (launchpad / bot holders).`;
       return screenReport;
     }
 
-    // ── Step 3: Walk candidates by score (highest first) ────────
-    const MIN_SCORE = config.screening.autoDeployMinScore ?? 40;
-    let deployed = false;
+    // ── Step 3: Build candidate blocks for LLM ──────────────────────────────
+    const candidateBlocks = enriched.map(({ pool, ti }) => {
+      const vol      = Number(pool.volatility || 0);
+      const top10    = ti?.audit?.top_holders_pct ?? "?";
+      const bots     = ti?.audit?.bot_holders_pct ?? "?";
+      const feesSol  = ti?.global_fees_sol ?? "?";
+      const launchpad = ti?.launchpad ?? null;
 
-    for (const { pool, ti } of recon) {
-      if (pool.score < MIN_SCORE) {
-        log("screening", `Auto-deploy skip: ${pool.name} — score ${pool.score} < ${MIN_SCORE}`);
-        break; // sorted by score desc, so no need to check further
-      }
+      const okxRisk = [
+        pool.risk_level  != null ? `risk=${pool.risk_level}`                    : null,
+        pool.bundle_pct  != null ? `bundle=${pool.bundle_pct}%`                 : null,
+        pool.sniper_pct  != null ? `sniper=${pool.sniper_pct}%`                 : null,
+        pool.is_rugpull  != null ? `rugpull=${pool.is_rugpull ? "YES" : "NO"}`  : null,
+        pool.is_wash     != null ? `wash=${pool.is_wash ? "YES" : "NO"}`        : null,
+      ].filter(Boolean).join(", ") || "unavailable";
 
-      // ── Step 3a: Technical entry check ──────────────────────
-      let techSignals = null;
-      try {
-        techSignals = await getTechnicalSignals({ pool_address: pool.pool, timeframe: "15m" });
-      } catch (e) {
-        log("screening", `Tech signals failed for ${pool.name}: ${e.message} — skipping`);
-        continue;
-      }
+      const okxTags = [
+        pool.smart_money_buy  ? "smart_money_buy"  : null,
+        pool.kol_in_clusters  ? "kol_in_clusters"  : null,
+        pool.dev_sold_all     ? "dev_sold_all"      : null,
+      ].filter(Boolean).join(", ");
 
-      if (techSignals?.error) {
-        log("screening", `Tech signals error for ${pool.name}: ${techSignals.error} — proceeding without`);
-        techSignals = null;
-      }
+      const techStatus = pool._tech_ok
+        ? (pool._exit_signal ? "⚠️ exit_signal_active (overbought — avoid)" : "✅ entry_ok")
+        : `❌ entry_warnings: ${pool._tech_warn.join("; ")}`;
 
-      if (techSignals?.entry_warnings?.length > 0) {
-        log("screening", `Auto-deploy skip: ${pool.name} — entry warnings: ${techSignals.entry_warnings.join(", ")}`);
-        continue;
-      }
+      const scoreBreakdown = Object.entries(pool.score_breakdown || {})
+        .map(([k, v]) => `${k}: ${v}`)
+        .join("\n    ");
 
-      // ── Step 3b: Compute bins (centered 50/50) ──────────────
-      const vol = Number(pool.volatility || 3);
-      const totalBins = Math.min(90, Math.max(35, Math.round(35 + (vol / 5) * 55)));
-      const suggestedBins = techSignals?.suggested_bins_below;
-      const binsBelow = suggestedBins || Math.round(totalBins * 0.5);
-      const binsAbove = suggestedBins || Math.round(totalBins * 0.5);
+      return [
+        `━━━ ${pool.name} ━━━`,
+        `  Score:    ${pool.score} [${pool.score_label}]`,
+        `  Breakdown:\n    ${scoreBreakdown}`,
+        `  Metrics:  fee_tvl=${pool.fee_active_tvl_ratio}% | vol=$${pool.volume_window} | tvl=$${pool.active_tvl} | volatility=${vol} | organic=${pool.organic_score} | mcap=$${pool.mcap}${pool.token_age_hours != null ? ` | age=${pool.token_age_hours}h` : ""}`,
+        `  Audit:    top10=${top10}% | bots=${bots}% | fees_sol=${feesSol}${launchpad ? ` | launchpad=${launchpad}` : ""}`,
+        `  OKX:      ${okxRisk}`,
+        okxTags ? `  Tags:     ${okxTags}` : null,
+        pool.price_vs_ath_pct != null ? `  ATH:      price_vs_ath=${pool.price_vs_ath_pct}%` : null,
+        `  Tech:     ${techStatus}`,
+        `  Bins:     below=${pool._bins_below} above=${pool._bins_above} (use as-is, do NOT recalculate)`,
+        `  Pool:     ${pool.pool}`,
+      ].filter(Boolean).join("\n");
+    });
 
-      // ── Step 3c: Deploy ──────────────────────────────────────
-      log("screening", `Auto-deploy: ${pool.name} | score=${pool.score} | bins=${binsBelow}/${binsAbove} | ${deployAmount} SOL`);
+    log("cron", `Step 3 done — ${candidateBlocks.length} blocks built for LLM`);
 
-      try {
-        const result = await deployPosition({
-          pool_address: pool.pool,
-          amount_y: deployAmount,
-          strategy: "bid_ask",
-          bins_below: binsBelow,
-          bins_above: binsAbove,
-          pool_name: pool.name,
-          bin_step: pool.bin_step,
-          volatility: vol,
-          fee_tvl_ratio: pool.fee_active_tvl_ratio,
-          organic_score: pool.organic_score,
-        });
+    // ── Step 4: LLM picks winner and deploys ────────────────────────────────
+    const { content } = await agentLoop(`
+SCREENING CYCLE
+Status: ${positions.total_positions}/${config.risk.maxPositions} positions | ${balance.sol.toFixed(3)} SOL | deploy=${deployAmount} SOL
 
-        if (result?.error || result?.blocked) {
-          log("screening", `Auto-deploy failed for ${pool.name}: ${result.error || result.reason}`);
-          continue; // try next candidate
-        }
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CANDIDATES (sorted best → worst)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${candidateBlocks.join("\n\n")}
 
-        const top10Pct = ti?.audit?.top_holders_pct ?? "?";
-        const botPctDisplay = ti?.audit?.bot_holders_pct ?? "?";
-        const feesSol = ti?.global_fees_sol ?? "?";
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DEPLOY RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Pick the highest-score candidate that passes judgment.
+   Score ≥ 60 = strong. 40–59 = need compensating factor. < 40 = skip.
+2. SKIP if: tech entry_warnings OR exit_signal_active (overbought).
+3. Use bins_below/bins_above exactly as pre-computed — do NOT recalculate.
+4. Call deploy_position with: strategy="bid_ask", amount_y=${deployAmount}
 
-        screenReport = `🚀 DEPLOYED (auto)\n\n${pool.name}\n${pool.pool}\n\n◎ ${deployAmount} SOL | bid_ask | score=${pool.score}\nRange: bins ${binsBelow}↓ ${binsAbove}↑\n\nMARKET\nFee/TVL: ${pool.fee_active_tvl_ratio}%\nVolume: $${pool.volume_window}\nTVL: $${pool.active_tvl}\nVolatility: ${vol}\nOrganic: ${pool.organic_score}\nMcap: $${pool.mcap}\nAge: ${pool.token_age_hours ?? "?"}h\n\nAUDIT\nTop10: ${top10Pct}%\nBots: ${botPctDisplay}%\nFees: ${feesSol} SOL\n\nSCORE BREAKDOWN\n${Object.entries(pool.score_breakdown || {}).map(([k, v]) => `${k}: ${v}`).join("\n")}`;
-        deployed = true;
-        break;
-      } catch (e) {
-        log("screening", `Auto-deploy exception for ${pool.name}: ${e.message}`);
-        continue;
-      }
-    }
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REPORT FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+On deploy:
+🚀 <pool name> | score=<x> | <below>↓<above>↑ bins
+Fee/TVL: <x>% | Vol: $<x> | Organic: <x>
+<1 sentence why>
 
-    if (!deployed) {
-      const best = recon[0]?.pool;
-      const reasons = recon.slice(0, 3).map(({ pool }) => {
-        if (pool.score < MIN_SCORE) return `${pool.name}: score ${pool.score} < ${MIN_SCORE}`;
-        return `${pool.name}: score=${pool.score}, tech/entry check failed`;
-      }).join("\n");
-      screenReport = `⛔ NO DEPLOY\n\nCycle finished with no valid entry.\n\nBEST CANDIDATE: ${best?.name ?? "none"} (score=${best?.score ?? 0})\n\nREJECTED:\n${reasons}`;
-    }
+On no deploy:
+⛔ <best name> (score=<x>) — <reason in a few words>
+Skipped: <comma list>
+`, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048, {
+      onToolStart:  async ({ name })                 => { await liveMessage?.toolStart(name); },
+      onToolFinish: async ({ name, result, success }) => { await liveMessage?.toolFinish(name, result, success); },
+    });
+
+    screenReport = content;
+
   } catch (error) {
     log("cron_error", `Screening cycle failed: ${error.message}`);
     screenReport = `Screening cycle failed: ${error.message}`;
   } finally {
     _screeningBusy = false;
-    if (!silent && telegramEnabled()) {
-      if (screenReport) {
-        if (liveMessage) await liveMessage.finalize(stripThink(screenReport)).catch(() => {});
-        else sendMessage(`🔍 Screening Cycle\n\n${stripThink(screenReport)}`).catch(() => { });
-      }
+    if (!silent && telegramEnabled() && screenReport) {
+      if (liveMessage) await liveMessage.finalize(stripThink(screenReport)).catch(() => {});
+      else sendMessage(`🔍 Screening Cycle\n\n${stripThink(screenReport)}`).catch(() => {});
     }
   }
+
   return screenReport;
 }
 
