@@ -145,7 +145,7 @@ TOKEN TAGS (from OKX advanced-info):
 
 DEPLOY RULES:
 - COMPOUNDING: Use the deploy amount from the goal EXACTLY. Do NOT default to a smaller number.
-- bins_below = round(35 + (volatility/5)*55) clamped to [35,90]. bins_above = 0. For pools with volume >$500k and volatility >4, prefer bins_below 86–94 to capture dump fees and earn on the bounce.
+- bins_below = round(35 + (volatility/5)*55) clamped to [35,90]. bins_above = 0 UNLESS the formula gives bins_below >= 50 — in that case set bins_above = 10 to avoid immediate OOR on upward movement. Rule: if bins_below >= 50, always set bins_above = 10. This is enforced by the safety check and deploy will be rejected otherwise.
 - Bin steps must be [80-125].
 - Pick ONE pool. Deploy or explain why none qualify.
 - TECHNICAL ENTRY CHECK: Before deploying, call get_technical_signals with the pool address and timeframe "15m". (1) If entry_warnings contains a volume spike warning → skip this pool, token already pumped. (2) If supertrend.is_bullish=false → skip, price in downtrend. (3) If suggested_bins_below is returned, use it instead of the formula above — ATR-based range is more accurate.

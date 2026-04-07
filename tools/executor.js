@@ -449,6 +449,18 @@ async function runSafetyChecks(name, args) {
         }
       }
 
+      // Check active bin placement — if price is at or near the top of range (bins_above=0),
+      // require at least 10 bins above to avoid immediate OOR on any upward movement.
+      // Rule: if bins_above < 10 AND bins_below >= 50, active bin is effectively at the ceiling.
+      const binsBelow = args.bins_below ?? 0;
+      const binsAbove = args.bins_above ?? 0;
+      if (binsAbove < 10 && binsBelow >= 50) {
+        return {
+          pass: false,
+          reason: `Range placement rejected: bins_below=${binsBelow} with bins_above=${binsAbove} places price at the very top of the range — any upward tick causes immediate OOR. Set bins_above to at least 10 to provide an upside buffer.`,
+        };
+      }
+
       return { pass: true };
     }
 
