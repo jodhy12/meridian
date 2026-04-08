@@ -261,6 +261,14 @@ export async function runManagementCycle({ silent = false } = {}) {
         actionMap.set(p.position, { action: "CLOSE", rule: 5, reason: "low yield" });
         continue;
       }
+      // Rule 6: stale — IL winning with no meaningful fees (position stuck in loss)
+      if (!pnlSuspect &&
+          (p.age_minutes ?? 0) >= 90 &&
+          (p.pnl_pct ?? 0) < -2 &&
+          (p.unclaimed_fees_usd ?? 0) < 0.05) {
+        actionMap.set(p.position, { action: "CLOSE", rule: 6, reason: "stale — IL > fees" });
+        continue;
+      }
       // Claim rule
       if ((p.unclaimed_fees_usd ?? 0) >= config.management.minClaimAmount) {
         actionMap.set(p.position, { action: "CLAIM" });

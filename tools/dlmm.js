@@ -870,12 +870,14 @@ export async function closePosition({ position_address, reason }) {
           const data = await res.json();
           const posEntry = (data.positions || []).find(p => p.positionAddress === position_address);
           if (posEntry) {
-            pnlUsd        = parseFloat(posEntry.pnlUsd || 0);
-            pnlPct        = parseFloat(posEntry.pnlPctChange || 0);
-            finalValueUsd = parseFloat(posEntry.allTimeWithdrawals?.total?.usd || 0);
-            initialUsd    = parseFloat(posEntry.allTimeDeposits?.total?.usd || 0);
-            feesUsd       = parseFloat(posEntry.allTimeFees?.total?.usd || 0) || feesUsd;
-            log("close", `Closed PnL from API (attempt ${attempt + 1}): pnl=${pnlUsd.toFixed(2)} USD (${pnlPct.toFixed(2)}%), withdrawn=${finalValueUsd.toFixed(2)}, deposited=${initialUsd.toFixed(2)}`);
+            const sol = config.management.solMode;
+            pnlUsd        = parseFloat((sol ? posEntry.pnlSol           : posEntry.pnlUsd)           || 0);
+            pnlPct        = parseFloat((sol ? posEntry.pnlSolPctChange   : posEntry.pnlPctChange)     || 0);
+            finalValueUsd = parseFloat((sol ? posEntry.allTimeWithdrawals?.total?.sol : posEntry.allTimeWithdrawals?.total?.usd) || 0);
+            initialUsd    = parseFloat((sol ? posEntry.allTimeDeposits?.total?.sol   : posEntry.allTimeDeposits?.total?.usd)   || 0);
+            feesUsd       = parseFloat((sol ? posEntry.allTimeFees?.total?.sol       : posEntry.allTimeFees?.total?.usd)       || 0) || feesUsd;
+            const unit = sol ? "SOL" : "USD";
+            log("close", `Closed PnL from API (attempt ${attempt + 1}): pnl=${pnlUsd.toFixed(4)} ${unit} (${pnlPct.toFixed(2)}%), withdrawn=${finalValueUsd.toFixed(4)}, deposited=${initialUsd.toFixed(4)}`);
             break;
           } else {
             log("close_warn", `Position not found in status=closed (attempt ${attempt + 1}/${SETTLE_DELAYS.length}) — still settling`);
@@ -888,6 +890,7 @@ export async function closePosition({ position_address, reason }) {
       if (finalValueUsd === 0) {
         const cachedPos = _positionsCache?.positions?.find(p => p.position === position_address);
         if (cachedPos) {
+          // When solMode=true, total_value_usd / pnl_usd / unclaimed_fees_usd already contain SOL values
           pnlUsd        = cachedPos.pnl_true_usd ?? cachedPos.pnl_usd ?? 0;
           pnlPct        = cachedPos.pnl_pct   ?? 0;
           feesUsd       = (cachedPos.collected_fees_true_usd || 0) + (cachedPos.unclaimed_fees_true_usd || 0);

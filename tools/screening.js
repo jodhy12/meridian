@@ -288,6 +288,19 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     if (eligible.length < before) log("dev_blocklist", `Filtered ${before - eligible.length} pool(s) via OKX creator check`);
   }
 
+  // ── Hard volatility filter ───────────────────────────────────
+  // Data: vol>5 positions avg -4% PnL (BURNIE -7.73%, Freg -4.36%). vol≤5 are recoverable.
+  const maxVol = config.screening.maxVolatility ?? 5;
+  eligible.splice(0, eligible.length, ...eligible.filter((p) => {
+    const vol = Number(p.volatility ?? 0);
+    if (vol > maxVol) {
+      log("screening", `Vol filter: dropped ${p.name} — volatility ${vol} > ${maxVol}`);
+      pushFilteredReason(filteredOut, p, `volatility ${vol} > ${maxVol}`);
+      return false;
+    }
+    return true;
+  }));
+
   // ── Score and rank candidates ────────────────────────────────
   for (const pool of eligible) {
     const smartWalletsPresent = !!(pool.kol_in_clusters || pool.smart_money_buy);
@@ -467,6 +480,7 @@ function scoreCandidate(pool, smartWalletsPresent = false) {
   let momentumPts = 0;
   if (priceChange > 50) momentumPts = -25;        // extreme pump — definitely exit liq
   else if (priceChange > 20) momentumPts = -15;    // pumped — likely exit liq
+  else if (priceChange > 10) momentumPts = -10;    // pump zone — PIXEL pattern risk (high fee_tvl but already pumped)
   else if (priceChange < -10) momentumPts = -25;   // heavy dump — distribution
   else if (priceChange < -5) momentumPts = -10;    // weak — caution
   score += momentumPts;
