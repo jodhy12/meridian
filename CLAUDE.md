@@ -4,6 +4,17 @@ Autonomous DLMM liquidity provider agent for Meteora pools on Solana.
 
 ---
 
+## Approach
+
+- Think before acting. Read existing files before writing code.
+- Be concise in output but thorough in reasoning.
+- Prefer editing over rewriting whole files.
+- Do not re-read files you have already read unless the file may have changed.
+- Test your code before declaring done.
+- No sycophantic openers or closing fluff.
+- Keep solutions simple and direct.
+- User instructions always override this file.
+
 ## Architecture Overview
 
 ```
@@ -38,11 +49,11 @@ tools/
 
 Three agent roles filter which tools the LLM can call:
 
-| Role | Purpose | Key Tools |
-|------|---------|-----------|
+| Role       | Purpose                       | Key Tools                                                                           |
+| ---------- | ----------------------------- | ----------------------------------------------------------------------------------- |
 | `SCREENER` | Find and deploy new positions | deploy_position, get_top_candidates, get_token_holders, check_smart_wallets_on_pool |
-| `MANAGER` | Manage open positions | close_position, claim_fees, swap_token, get_position_pnl, set_position_note |
-| `GENERAL` | Chat / manual commands | All tools |
+| `MANAGER`  | Manage open positions         | close_position, claim_fees, swap_token, get_position_pnl, set_position_note         |
+| `GENERAL`  | Chat / manual commands        | All tools                                                                           |
 
 Sets defined in `agent.js:6-7`. If you add a tool, also add it to the relevant set(s).
 
@@ -60,37 +71,38 @@ Sets defined in `agent.js:6-7`. If you add a tool, also add it to the relevant s
 ## Config System
 
 `config.js` loads `user-config.json` at startup. Runtime mutations go through `update_config` tool (executor.js) which:
+
 - Updates the live `config` object immediately
 - Persists to `user-config.json`
 - Restarts cron jobs if intervals changed
 
 **Valid config keys and their sections:**
 
-| Key | Section | Default |
-|-----|---------|---------|
-| minFeeActiveTvlRatio | screening | 0.05 |
-| minTvl / maxTvl | screening | 10k / 150k |
-| minVolume | screening | 500 |
-| minOrganic | screening | 60 |
-| minHolders | screening | 500 |
-| minMcap / maxMcap | screening | 150k / 10M |
-| minBinStep / maxBinStep | screening | 80 / 125 |
-| timeframe | screening | "5m" |
-| category | screening | "trending" |
-| minTokenFeesSol | screening | 30 |
-| maxBundlersPct | screening | 30 |
-| maxTop10Pct | screening | 60 |
-| blockedLaunchpads | screening | [] |
-| deployAmountSol | management | 0.5 |
-| maxDeployAmount | risk | 50 |
-| maxPositions | risk | 3 |
-| gasReserve | management | 0.2 |
-| positionSizePct | management | 0.35 |
-| minSolToOpen | management | 0.55 |
-| outOfRangeWaitMinutes | management | 30 |
-| managementIntervalMin | schedule | 10 |
-| screeningIntervalMin | schedule | 30 |
-| managementModel / screeningModel / generalModel | llm | openrouter/healer-alpha |
+| Key                                             | Section    | Default                 |
+| ----------------------------------------------- | ---------- | ----------------------- |
+| minFeeActiveTvlRatio                            | screening  | 0.05                    |
+| minTvl / maxTvl                                 | screening  | 10k / 150k              |
+| minVolume                                       | screening  | 500                     |
+| minOrganic                                      | screening  | 60                      |
+| minHolders                                      | screening  | 500                     |
+| minMcap / maxMcap                               | screening  | 150k / 10M              |
+| minBinStep / maxBinStep                         | screening  | 80 / 125                |
+| timeframe                                       | screening  | "5m"                    |
+| category                                        | screening  | "trending"              |
+| minTokenFeesSol                                 | screening  | 30                      |
+| maxBundlersPct                                  | screening  | 30                      |
+| maxTop10Pct                                     | screening  | 60                      |
+| blockedLaunchpads                               | screening  | []                      |
+| deployAmountSol                                 | management | 0.5                     |
+| maxDeployAmount                                 | risk       | 50                      |
+| maxPositions                                    | risk       | 3                       |
+| gasReserve                                      | management | 0.2                     |
+| positionSizePct                                 | management | 0.35                    |
+| minSolToOpen                                    | management | 0.55                    |
+| outOfRangeWaitMinutes                           | management | 30                      |
+| managementIntervalMin                           | schedule   | 10                      |
+| screeningIntervalMin                            | schedule   | 30                      |
+| managementModel / screeningModel / generalModel | llm        | openrouter/healer-alpha |
 
 **`computeDeployAmount(walletSol)`** — scales position size with wallet balance (compounding). Formula: `clamp(deployable × positionSizePct, floor=deployAmountSol, ceil=maxDeployAmount)`.
 
@@ -108,6 +120,7 @@ Sets defined in `agent.js:6-7`. If you add a tool, also add it to the relevant s
 ## Screener Safety Checks (executor.js)
 
 Before `deploy_position` executes:
+
 - `bin_step` must be within `[minBinStep, maxBinStep]`
 - Position count must be below `maxPositions` (force-fresh scan, no cache)
 - No duplicate pool allowed (same pool_address)
@@ -123,11 +136,11 @@ Before `deploy_position` executes:
 Linear formula based on pool volatility (set in screener prompt, `index.js`):
 
 ```
-bins_below = round(35 + (volatility / 5) * 34), clamped to [35, 69]
+bins_below = round(35 + (volatility / 5) * 55), clamped to [35, 90]
 ```
 
 - Low volatility (0) → 35 bins
-- High volatility (5+) → 69 bins
+- High volatility (5+) → 90 bins
 - Any value in between is valid (continuous, not tiered)
 
 ---
@@ -136,11 +149,11 @@ bins_below = round(35 + (volatility / 5) * 34), clamped to [35, 69]
 
 Handled directly in `index.js` (bypass LLM):
 
-| Command | Action |
-|---------|--------|
-| `/positions` | List open positions with progress bar |
-| `/close <n>` | Close position by list index |
-| `/set <n> <note>` | Set note on position by list index |
+| Command           | Action                                |
+| ----------------- | ------------------------------------- |
+| `/positions`      | List open positions with progress bar |
+| `/close <n>`      | Close position by list index          |
+| `/set <n> <note>` | Set note on position by list index    |
 
 Progress bar format: `[████████░░░░░░░░░░░░] 40%` (no bin numbers, no arrows)
 
@@ -155,6 +168,7 @@ Progress bar format: `[████████░░░░░░░░░░░
 ## Bundler Detection (token.js)
 
 Two signals used in `getTokenHolders()`:
+
 - `common_funder` — multiple wallets funded by same source
 - `funded_same_window` — multiple wallets funded in same time window
 
@@ -166,11 +180,13 @@ Jupiter audit API: `botHoldersPercentage` (5–25% is normal for legitimate toke
 ## Base Fee Calculation (dlmm.js)
 
 Read from pool object at deploy time:
+
 ```js
 const baseFactor = pool.lbPair.parameters?.baseFactor ?? 0;
-const actualBaseFee = baseFactor > 0
-  ? parseFloat((baseFactor * actualBinStep / 1e6 * 100).toFixed(4))
-  : null;
+const actualBaseFee =
+  baseFactor > 0
+    ? parseFloat((((baseFactor * actualBinStep) / 1e6) * 100).toFixed(4))
+    : null;
 ```
 
 ---
@@ -188,6 +204,7 @@ const actualBaseFee = baseFactor > 0
 ## Lessons System
 
 `lessons.js` records closed position performance and auto-derives lessons. Key points:
+
 - `getLessonsForPrompt({ agentType })` — injects relevant lessons into system prompt
 - `evolveThresholds()` — adjusts screening thresholds based on winners vs losers
 - Performance recorded via `recordPerformance()` called from executor.js after `close_position`
@@ -205,23 +222,23 @@ Not required for normal operation.
 
 ## Environment Variables
 
-| Var | Required | Purpose |
-|-----|----------|---------|
-| `WALLET_PRIVATE_KEY` | Yes | Base58 or JSON array private key |
-| `RPC_URL` | Yes | Solana RPC endpoint |
-| `OPENROUTER_API_KEY` | Yes | LLM API key |
-| `TELEGRAM_BOT_TOKEN` | No | Telegram notifications |
-| `TELEGRAM_CHAT_ID` | No | Telegram chat target |
-| `LLM_BASE_URL` | No | Override for local LLM (e.g. LM Studio) |
-| `LLM_MODEL` | No | Override default model |
-| `DRY_RUN` | No | Skip all on-chain transactions |
-| `HIVE_MIND_URL` | No | Collective intelligence server |
-| `HIVE_MIND_API_KEY` | No | Hive mind auth token |
-| `HELIUS_API_KEY` | No | Enhanced wallet balance data |
+| Var                  | Required | Purpose                                 |
+| -------------------- | -------- | --------------------------------------- |
+| `WALLET_PRIVATE_KEY` | Yes      | Base58 or JSON array private key        |
+| `RPC_URL`            | Yes      | Solana RPC endpoint                     |
+| `OPENROUTER_API_KEY` | Yes      | LLM API key                             |
+| `TELEGRAM_BOT_TOKEN` | No       | Telegram notifications                  |
+| `TELEGRAM_CHAT_ID`   | No       | Telegram chat target                    |
+| `LLM_BASE_URL`       | No       | Override for local LLM (e.g. LM Studio) |
+| `LLM_MODEL`          | No       | Override default model                  |
+| `DRY_RUN`            | No       | Skip all on-chain transactions          |
+| `HIVE_MIND_URL`      | No       | Collective intelligence server          |
+| `HIVE_MIND_API_KEY`  | No       | Hive mind auth token                    |
+| `HELIUS_API_KEY`     | No       | Enhanced wallet balance data            |
 
 ---
 
 ## Known Issues / Tech Debt
 
-- `lessons.js evolveThresholds()` evolves `maxVolatility` + `minFeeTvlRatio` (wrong key names — should be `minFeeActiveTvlRatio`; `maxVolatility` doesn't exist in config at all). The evolution is a no-op for those keys.
 - `get_wallet_positions` tool (dlmm.js) is in definitions.js but not in MANAGER_TOOLS or SCREENER_TOOLS — only available in GENERAL role.
+- `bins_below` formula in `prompt.js` was outdated (`×34`, clamp 69) vs `index.js` (`×55`, clamp 90) — LLM received conflicting instructions. Fixed: `prompt.js` now matches `index.js`.

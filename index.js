@@ -251,7 +251,20 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (p.active_bin != null && p.upper_bin != null &&
           p.active_bin > p.upper_bin &&
           (p.minutes_out_of_range ?? 0) >= config.management.outOfRangeWaitMinutes) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 4, reason: "OOR" });
+        actionMap.set(p.position, { action: "CLOSE", rule: 4, reason: "OOR above" });
+        continue;
+      }
+      // Rule 4b: dumped far below range (symmetric to Rule 3)
+      if (p.active_bin != null && p.lower_bin != null &&
+          p.lower_bin - p.active_bin > config.management.outOfRangeBinsToClose) {
+        actionMap.set(p.position, { action: "CLOSE", rule: "4b", reason: "dumped far below range" });
+        continue;
+      }
+      // Rule 4c: stale below range — price ranging below, waited long enough
+      if (p.active_bin != null && p.lower_bin != null &&
+          p.active_bin < p.lower_bin &&
+          (p.minutes_out_of_range ?? 0) >= config.management.outOfRangeWaitMinutes) {
+        actionMap.set(p.position, { action: "CLOSE", rule: "4c", reason: "OOR below" });
         continue;
       }
       // Rule 5: fee yield too low
@@ -267,6 +280,14 @@ export async function runManagementCycle({ silent = false } = {}) {
           (p.pnl_pct ?? 0) < -2 &&
           (p.unclaimed_fees_usd ?? 0) < 0.05) {
         actionMap.set(p.position, { action: "CLOSE", rule: 6, reason: "stale — IL > fees" });
+        continue;
+      }
+      // Rule 7: "nyayur" check — in range but generating zero fees after 15 min → dead pool
+      if (p.in_range &&
+          (p.age_minutes ?? 0) >= 15 &&
+          (p.fee_per_tvl_24h ?? -1) === 0 &&
+          (p.unclaimed_fees_usd ?? 0) < 0.001) {
+        actionMap.set(p.position, { action: "CLOSE", rule: 7, reason: "no fees after 15 min — dead pool" });
         continue;
       }
       // Claim rule
