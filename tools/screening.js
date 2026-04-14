@@ -443,20 +443,25 @@ function scoreCandidate(pool, smartWalletsPresent = false) {
   score += organicPts;
   breakdown.organic = `${organic} → +${organicPts}`;
 
-  // ── Smart wallets present (10 pts) ───────────────────────────
-  // KOL/alpha wallets entering = strong lead indicator.
-  const swPts = smartWalletsPresent ? 10 : 0;
-  score += swPts;
-  breakdown.smart_wallets = smartWalletsPresent ? "+10" : "0";
-
-  // ── On-chain signals (10 pts max) ────────────────────────────
-  // dev_sold_all = no dev dump risk (+5), smart_money_buy tag = accumulation (+5)
+  // ── Smart wallets / on-chain signals (10 pts max) ────────────
+  // OKX data often unavailable — treat as bonus when present, not required.
+  // smart_money_buy/kol from OKX clusters (+10), dev_sold_all (+5), both capped at 10.
   const tags = pool.okx_tags || [];
   const devSoldAll = tags.includes("dev_sold_all") || pool.dev_sold_all;
   const smartMoneyBuy = tags.includes("smart_money_buy") || pool.smart_money_buy;
-  const onChainPts = (devSoldAll ? 5 : 0) + (smartMoneyBuy ? 5 : 0);
-  score += onChainPts;
-  breakdown.on_chain = `dev_sold=${devSoldAll} smart_money=${smartMoneyBuy} → +${onChainPts}`;
+  const kolPresent = pool.kol_in_clusters;
+  const swPts = smartWalletsPresent ? 10 : 0;
+  const onChainPts = Math.min(10, (devSoldAll ? 3 : 0) + (smartMoneyBuy ? 5 : 0) + (kolPresent ? 5 : 0));
+  const signalPts = Math.max(swPts, onChainPts); // don't double-count
+  score += signalPts;
+  breakdown.smart_signals = `sw=${smartWalletsPresent} okx_smart=${smartMoneyBuy} kol=${kolPresent} dev_sold=${devSoldAll} → +${signalPts}`;
+
+  // ── Fee/TVL above target bonus (5 pts) ───────────────────────
+  // Replaces dead OKX weight: reward pools generating 2× the timeframe target.
+  // These pools have proven demand and can sustain fees through IL.
+  const feeTvlBonus = feeTvl >= feeTvlTarget * 2 ? 5 : 0;
+  score += feeTvlBonus;
+  if (feeTvlBonus) breakdown.fee_tvl_bonus = `${feeTvl}% ≥ ${(feeTvlTarget * 2).toFixed(1)}% (2× target) → +5`;
 
   // ── Token age bonus (5 pts max) ──────────────────────────────
   // Mature tokens are more stable. <48h already hard-filtered.
