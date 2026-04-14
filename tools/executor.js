@@ -449,16 +449,14 @@ async function runSafetyChecks(name, args) {
         }
       }
 
-      // Weighted bid-ask safety: require bins on both sides for balanced fee capture.
+      // Weighted bid-ask safety: auto-correct bins_above if too one-sided.
       // Minimum bins_above = 20% of bins_below to ensure upside buffer against OOR.
       const binsBelow = args.bins_below ?? 0;
       const binsAbove = args.bins_above ?? 0;
       const minAbove = Math.max(5, Math.round(binsBelow * 0.2));
       if (binsBelow >= 20 && binsAbove < minAbove) {
-        return {
-          pass: false,
-          reason: `Range placement rejected: bins_below=${binsBelow} with bins_above=${binsAbove} is too one-sided. Use weighted bid-ask: set bins_above to at least ${minAbove} (20% of bins_below).`,
-        };
+        log("executor", `bins_above=${binsAbove} too one-sided — auto-correcting to ${minAbove} (20% of bins_below=${binsBelow})`);
+        args.bins_above = minAbove;
       }
 
       return { pass: true };
