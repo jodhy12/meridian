@@ -267,10 +267,12 @@ export async function runManagementCycle({ silent = false } = {}) {
         actionMap.set(p.position, { action: "CLOSE", rule: "4c", reason: "OOR below" });
         continue;
       }
-      // Rule 5: fee yield too low
+      // Rule 5: fee yield too low AND position is losing (avoid gas-drain closes on profitable positions)
+      // A profitable in-range position should keep running toward TP — closing it at 0.1% pnl costs more in gas than it gains.
       if (p.fee_per_tvl_24h != null &&
           p.fee_per_tvl_24h < config.management.minFeePerTvl24h &&
-          (p.age_minutes ?? 0) >= 60) {
+          (p.age_minutes ?? 0) >= (config.management.minAgeBeforeYieldCheck ?? 60) &&
+          (p.pnl_pct ?? 0) <= 0) {
         actionMap.set(p.position, { action: "CLOSE", rule: 5, reason: "low yield" });
         continue;
       }
