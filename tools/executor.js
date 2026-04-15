@@ -197,9 +197,16 @@ const toolMap = {
       Object.entries(CONFIG_MAP).map(([k, v]) => [k.toLowerCase(), [k, v]])
     );
 
+    const MODEL_KEYS = new Set(["managementModel", "screeningModel", "generalModel"]);
     for (const [key, val] of Object.entries(changes)) {
       const match = CONFIG_MAP[key] ? [key, CONFIG_MAP[key]] : CONFIG_MAP_LOWER[key.toLowerCase()];
       if (!match) { unknown.push(key); continue; }
+      // Validate model IDs — must contain "/" (e.g. "minimax/minimax-m2.5")
+      if (MODEL_KEYS.has(match[0]) && (typeof val !== "string" || !val.includes("/"))) {
+        log("config", `update_config rejected: "${val}" is not a valid model ID for ${match[0]} (must contain "/")`);
+        unknown.push(key);
+        continue;
+      }
       applied[match[0]] = val;
     }
 
