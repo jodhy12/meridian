@@ -12,7 +12,7 @@ import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled, createLiveMessage } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, setLastTpCheckPct, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { getTokenInfo } from "./tools/token.js";
 
@@ -205,6 +205,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     // ── Deterministic rule checks (no LLM) ──────────────────────────
     // action: CLOSE | CLAIM | STAY | INSTRUCTION (needs LLM)
     const actionMap = new Map();
+    const tpAnalysisQueue = [];
     for (const p of positionData) {
       // Hard exit — highest priority
       if (exitMap.has(p.position)) {
@@ -231,14 +232,33 @@ export async function runManagementCycle({ silent = false } = {}) {
         return false;
       })();
 
-      // Rule 1: stop loss
-      if (!pnlSuspect && p.pnl_pct != null && p.pnl_pct <= config.management.stopLossPct) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 1, reason: "stop loss" });
+      // Rule 1a: hard stop loss — no override (catastrophic protection)
+      if (!pnlSuspect && p.pnl_pct != null && p.pnl_pct <= config.management.stopLossPct * 2) {
+        actionMap.set(p.position, { action: "CLOSE", rule: "1a", reason: `hard stop loss ${p.pnl_pct.toFixed(2)}%` });
         continue;
       }
-      // Rule 2: take profit
+      // Rule 1: soft stop loss — skip if fees are strong and still in range (IL may recover)
+      if (!pnlSuspect && p.pnl_pct != null && p.pnl_pct <= config.management.stopLossPct) {
+        const feeStrong = (p.fee_per_tvl_24h ?? 0) >= config.management.minFeePerTvl24h;
+        if (p.in_range && feeStrong) {
+          log("cron", `[Rule 1] ${p.pair}: PnL ${p.pnl_pct.toFixed(2)}% hit stop loss but fees strong (${p.fee_per_tvl_24h}) & in range — HOLD for recovery`);
+        } else {
+          actionMap.set(p.position, { action: "CLOSE", rule: 1, reason: `stop loss (pnl ${p.pnl_pct.toFixed(2)}%, fee/tvl=${p.fee_per_tvl_24h ?? 0}, in_range=${p.in_range})` });
+          continue;
+        }
+      }
+      // Rule 2: take profit — analyze before closing
+      // At each new integer PnL% (3%, 4%, 5%...), run technical analysis.
+      // Bullish + no exit signal → HOLD. Bearish or exit signal → CLOSE.
       if (!pnlSuspect && p.pnl_pct != null && p.pnl_pct >= config.management.takeProfitFeePct) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 2, reason: "take profit" });
+        const tracked = getTrackedPosition(p.position);
+        const currentFloor = Math.floor(p.pnl_pct);
+        const lastCheckPct = tracked?.last_tp_check_pct ?? 0;
+        // Only re-analyze at each new integer % threshold
+        if (currentFloor > lastCheckPct) {
+          tpAnalysisQueue.push({ position: p, floor: currentFloor });
+        }
+        // Between thresholds: hold (trailing handles the mechanical exit)
         continue;
       }
       // Rule 3: pumped far above range
@@ -298,6 +318,31 @@ export async function runManagementCycle({ silent = false } = {}) {
         continue;
       }
       actionMap.set(p.position, { action: "STAY" });
+    }
+
+    // ── Smart TP analysis: check if profitable position should keep running ──
+    // LP-relevant signals: exit_signal (sharp move coming), volume health, range proximity
+    for (const { position: p, floor } of tpAnalysisQueue) {
+      try {
+        const tech = await getTechnicalSignals({ pool_address: p.pool_address || p.pool, timeframe: "5m" });
+        const exitSignal = tech?.exit_signal ?? false;
+        const volSpike = tech?.indicators?.volume_spike?.is_spike ?? false;
+        const feeDying = (p.fee_per_tvl_24h ?? 999) < config.management.minFeePerTvl24h;
+        const shouldClose = exitSignal || (feeDying && !volSpike);
+        setLastTpCheckPct(p.position, floor);
+        if (shouldClose) {
+          const reason = exitSignal
+            ? `TP exit: ${tech.exit_reason} at ${p.pnl_pct.toFixed(2)}%`
+            : `TP exit: fees dying (fee/tvl=${p.fee_per_tvl_24h}) at ${p.pnl_pct.toFixed(2)}%`;
+          actionMap.set(p.position, { action: "CLOSE", rule: 2, reason });
+          log("cron", `[TP Analysis] ${p.pair}: CLOSE — ${reason}`);
+        } else {
+          log("cron", `[TP Analysis] ${p.pair}: HOLD at ${p.pnl_pct.toFixed(2)}% (fees healthy, no exit signal) — next check at ${floor + 1}%`);
+        }
+      } catch (e) {
+        log("cron_warn", `[TP Analysis] Failed for ${p.pair}: ${e.message} — fallback to hard TP`);
+        actionMap.set(p.position, { action: "CLOSE", rule: 2, reason: `take profit (analysis failed) at ${p.pnl_pct.toFixed(2)}%` });
+      }
     }
 
     // ── Build JS report ──────────────────────────────────────────────

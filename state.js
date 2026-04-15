@@ -104,6 +104,7 @@ export function trackPosition({
     confirmed_trailing_exit_reason: null,
     confirmed_trailing_exit_until: null,
     trailing_active: false,
+    last_tp_check_pct: 0,
   };
   pushEvent(state, { action: "deploy", position, pool_name: pool_name || pool });
   save(state);
@@ -338,6 +339,17 @@ export function getTrackedPositions(openOnly = false) {
 export function getTrackedPosition(position_address) {
   const state = load();
   return state.positions[position_address] || null;
+}
+
+/**
+ * Update the last TP check level for a position (used by smart TP analysis).
+ */
+export function setLastTpCheckPct(position_address, pct) {
+  const state = load();
+  const pos = state.positions[position_address];
+  if (!pos) return;
+  pos.last_tp_check_pct = pct;
+  save(state);
 }
 
 /**
