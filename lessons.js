@@ -533,9 +533,13 @@ export function getLessonsForPrompt(opts = {}) {
   const outcomePriority = { bad: 0, poor: 1, failed: 1, good: 2, worked: 2, manual: 1, neutral: 3, evolution: 2 };
   const byPriority = (a, b) => (outcomePriority[a.outcome] ?? 3) - (outcomePriority[b.outcome] ?? 3);
 
+  // self_tune lessons record past config changes that are already persisted in user-config.json.
+  // Re-injecting them causes the LLM to re-apply stale config values on every cycle.
+  const eligibleLessons = data.lessons.filter((l) => !l.tags?.includes("self_tune"));
+
   // ── Tier 1: Pinned ──────────────────────────────────────────────
   // Respect role even for pinned lessons — a pinned SCREENER lesson shouldn't pollute MANAGER
-  const pinned = data.lessons
+  const pinned = eligibleLessons
     .filter((l) => l.pinned && (!l.role || l.role === agentType || agentType === "GENERAL"))
     .sort(byPriority)
     .slice(0, PINNED_CAP);
@@ -544,7 +548,7 @@ export function getLessonsForPrompt(opts = {}) {
 
   // ── Tier 2: Role-matched ────────────────────────────────────────
   const roleTags = ROLE_TAGS[agentType] || [];
-  const roleMatched = data.lessons
+  const roleMatched = eligibleLessons
     .filter((l) => {
       if (usedIds.has(l.id)) return false;
       // Include if: lesson has no role restriction OR matches this role
@@ -561,7 +565,7 @@ export function getLessonsForPrompt(opts = {}) {
   // ── Tier 3: Recent fill ─────────────────────────────────────────
   const remainingBudget = RECENT_CAP - pinned.length - roleMatched.length;
   const recent = remainingBudget > 0
-    ? data.lessons
+    ? eligibleLessons
         .filter((l) => !usedIds.has(l.id))
         .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""))
         .slice(0, remainingBudget)
