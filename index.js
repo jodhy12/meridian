@@ -620,8 +620,8 @@ ${candidateBlocks.join("\n\n")}
 DEPLOY RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. Pick the highest-score candidate that passes judgment.
-   Score ≥ 60 = deploy. 55–59 = only if smart_money or kol confirmed. < 55 = skip.
-   Data: 54 positions closed, only score ≥ 60 candidates produced TP hits.
+   Score ≥ 55 = deploy. 50–54 = only if smart_money or kol confirmed. < 50 = skip.
+   Data: 71 positions closed, score ≥ 55 + fee_tvl ≥ 0.5% is the minimum viable threshold.
 2. SKIP if: tech entry_warnings OR exit_signal_active (overbought).
 3. Use bins_below/bins_above exactly as pre-computed — do NOT recalculate.
 4. Call deploy_position with: strategy="bid_ask", amount_y=${deployAmount}
