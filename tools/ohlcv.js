@@ -235,15 +235,26 @@ function aggregateCandles(bars, n) {
   return result;
 }
 
+// ─── In-memory OHLCV cache (5 min TTL) ─────────────────────────
+const _ohlcvCache = new Map();
+const OHLCV_CACHE_TTL = 5 * 60 * 1000;
+
 // ─── GeckoTerminal OHLCV fetch ─────────────────────────────────
 async function fetchOhlcv(poolAddress, timeframe = "15m") {
+  const cacheKey = `${poolAddress}:${timeframe}`;
+  const cached = _ohlcvCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < OHLCV_CACHE_TTL) return cached.bars;
+
   const tf       = TIMEFRAME_MAP[timeframe] ?? TIMEFRAME_MAP["15m"];
   const rawLimit = tf.aggregate > 1 ? Math.min(tf.aggregate * 60, 1000) : 100;
   const url      = `${GECKOTERMINAL_BASE}/networks/solana/pools/${poolAddress}/ohlcv/${tf.gt}?limit=${rawLimit}&currency=usd`;
 
-  const res = await fetch(url, {
-    headers: { "Accept": "application/json;version=20230302" },
-  });
+  // Retry once on 429 with 3s backoff
+  let res = await fetch(url, { headers: { "Accept": "application/json;version=20230302" } });
+  if (res.status === 429) {
+    await new Promise(r => setTimeout(r, 3000));
+    res = await fetch(url, { headers: { "Accept": "application/json;version=20230302" } });
+  }
   if (!res.ok) throw new Error(`GeckoTerminal OHLCV fetch failed: ${res.status} ${res.statusText}`);
 
   const data = await res.json();
@@ -251,7 +262,9 @@ async function fetchOhlcv(poolAddress, timeframe = "15m") {
   if (!raw.length) throw new Error("GeckoTerminal returned empty OHLCV data");
 
   const bars = raw.map(([t, o, h, l, c, v]) => ({ time: t, open: o, high: h, low: l, close: c, volume: v }));
-  return tf.aggregate > 1 ? aggregateCandles(bars, tf.aggregate) : bars;
+  const result = tf.aggregate > 1 ? aggregateCandles(bars, tf.aggregate) : bars;
+  _ohlcvCache.set(cacheKey, { bars: result, ts: Date.now() });
+  return result;
 }
 
 // ─── Main exported tool handler ────────────────────────────────
