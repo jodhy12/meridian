@@ -95,8 +95,14 @@ export async function discoverPools({
 
   const condensed = allPools.map(condensePool);
 
+  const WSOL_MINT = "So11111111111111111111111111111111111111112";
+
   // Hard-filter blacklisted tokens and blocked deployers (what pool discovery already gave us)
   let pools = condensed.filter((p) => {
+    if (p.quote?.mint !== WSOL_MINT) {
+      log("screening", `Filtered ${p.name} — quote token is not SOL (${p.quote?.symbol})`);
+      return false;
+    }
     if (isBlacklisted(p.base?.mint)) {
       log("blacklist", `Filtered blacklisted token ${p.base?.symbol} (${p.base?.mint?.slice(0, 8)}) in pool ${p.name}`);
       return false;
