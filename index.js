@@ -324,6 +324,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     // LP-relevant signals: exit_signal (sharp move coming), volume health, range proximity
     for (const { position: p, floor } of tpAnalysisQueue) {
       try {
+        await new Promise(r => setTimeout(r, 500)); // GeckoTerminal rate limit
         const tech = await getTechnicalSignals({ pool_address: p.pool_address || p.pool, timeframe: "5m" });
         const exitSignal = tech?.exit_signal ?? false;
         const volSpike = tech?.indicators?.volume_spike?.is_spike ?? false;
@@ -548,7 +549,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       pool._exit_signal = tech?.exit_signal ?? false;
 
       enriched.push({ pool, ti });
-      await new Promise(r => setTimeout(r, 100)); // GeckoTerminal rate limit
+      await new Promise(r => setTimeout(r, 500)); // GeckoTerminal rate limit
     }
 
     log("cron", `Step 2 done — ${enriched.length} candidates after enrichment filters`);
