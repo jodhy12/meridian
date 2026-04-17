@@ -539,8 +539,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
       } catch { /**/ }
 
       // 2e. Pre-compute bins (centered 50/50, ATR-adjusted if available)
+      // Data from 72 positions: bins 41-60 = best bucket, 81+ = dust
       const vol = Number(pool.volatility || 3);
-      const totalBins = Math.min(90, Math.max(35, Math.round(35 + (vol / 5) * 55)));
+      const totalBins = Math.min(60, Math.max(30, Math.round(30 + (vol / 5) * 30)));
       const atrBins = tech?.suggested_bins_below ?? null;
       pool._bins_below = atrBins ?? Math.round(totalBins * 0.5);
       pool._bins_above = atrBins ?? Math.round(totalBins * 0.5);
@@ -621,10 +622,15 @@ DEPLOY RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. Pick the highest-score candidate that passes judgment.
    Score ≥ 55 = deploy. 50–54 = only if smart_money or kol confirmed. < 50 = skip.
-   Data: 71 positions closed, score ≥ 55 + fee_tvl ≥ 0.5% is the minimum viable threshold.
+   Data: 72 positions closed, score ≥ 55 + fee_tvl ≥ 0.5% is the minimum viable threshold.
 2. SKIP if: tech entry_warnings OR exit_signal_active (overbought).
 3. Use bins_below/bins_above exactly as pre-computed — do NOT recalculate.
 4. Call deploy_position with: strategy="bid_ask", amount_y=${deployAmount}
+
+SCORING GUIDANCE (from 72 closed positions):
+- SWEET SPOT: fee_tvl ≥ 3 + vol 2–5 → 4 wins / 0 losses. Boost score +10.
+- AVOID ZONE: fee_tvl < 3 + vol < 2 → 0 wins / 3 losses. Penalize score -10.
+- fee_tvl ≥ 6 + vol 5+ → trap (high fee from dump volatility). Penalize score -15.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 REPORT FORMAT

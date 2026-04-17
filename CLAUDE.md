@@ -136,12 +136,13 @@ Before `deploy_position` executes:
 Linear formula based on pool volatility (set in screener prompt, `index.js`):
 
 ```
-bins_below = round(35 + (volatility / 5) * 55), clamped to [35, 90]
+bins_below = round(30 + (volatility / 5) * 30), clamped to [30, 60]
 ```
 
-- Low volatility (0) → 35 bins
-- High volatility (5+) → 90 bins
+- Low volatility (0) → 30 bins
+- High volatility (5+) → 60 bins
 - Any value in between is valid (continuous, not tiered)
+- Data: bins 41–60 = best PnL bucket (+0.39%), 81+ = dust (+0.03%)
 
 ---
 

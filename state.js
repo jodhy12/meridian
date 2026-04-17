@@ -466,13 +466,16 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   }
 
   // ── Low yield (only after position has had time to accumulate fees) ───
+  // Skip low-yield close when PnL is positive — profitable positions should keep running toward TP.
+  // Data: 3 of 7 winners needed 200+ min to hit TP (Iroha 498m, Moritz 283m, Neukgu 273m).
   const { age_minutes } = positionData;
   const minAgeForYieldCheck = mgmtConfig.minAgeBeforeYieldCheck ?? 60;
   if (
     fee_per_tvl_24h != null &&
     mgmtConfig.minFeePerTvl24h != null &&
     fee_per_tvl_24h < mgmtConfig.minFeePerTvl24h &&
-    (age_minutes == null || age_minutes >= minAgeForYieldCheck)
+    (age_minutes == null || age_minutes >= minAgeForYieldCheck) &&
+    (currentPnlPct == null || currentPnlPct <= 0)
   ) {
     return {
       action: "LOW_YIELD",
