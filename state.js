@@ -104,6 +104,7 @@ export function trackPosition({
     confirmed_trailing_exit_reason: null,
     confirmed_trailing_exit_until: null,
     trailing_active: false,
+    trailing_activated_at: null,
     last_tp_check_pct: 0,
   };
   pushEvent(state, { action: "deploy", position, pool_name: pool_name || pool });
@@ -414,6 +415,7 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   // Activate trailing TP once trigger threshold is reached
   if (mgmtConfig.trailingTakeProfit && !pos.trailing_active && (pos.peak_pnl_pct ?? 0) >= mgmtConfig.trailingTriggerPct) {
     pos.trailing_active = true;
+    pos.trailing_activated_at = new Date().toISOString();
     changed = true;
     log("state", `Position ${position_address} trailing TP activated (confirmed peak: ${pos.peak_pnl_pct}%)`);
   }
@@ -441,6 +443,18 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
 
   // ── Trailing TP ────────────────────────────────────────────────
   if (!pnl_pct_suspicious && pos.trailing_active) {
+    // Max trailing duration cap — data: BURNIE held 393m (-7.73%), BabyTrump 346m (-1.43%)
+    const maxTrailMin = mgmtConfig.maxTrailingDurationMin;
+    if (maxTrailMin != null && pos.trailing_activated_at) {
+      const trailingMinutes = Math.floor((Date.now() - new Date(pos.trailing_activated_at).getTime()) / 60000);
+      if (trailingMinutes >= maxTrailMin) {
+        return {
+          action: "TRAILING_TP",
+          reason: `Trailing TP max duration: trailing for ${trailingMinutes}m >= ${maxTrailMin}m cap (peak ${pos.peak_pnl_pct.toFixed(2)}%, current ${currentPnlPct?.toFixed(2) ?? "?"}%)`,
+          confirmed_recheck: true, // skip confirmation — hard cap
+        };
+      }
+    }
     const dropFromPeak = pos.peak_pnl_pct - currentPnlPct;
     if (dropFromPeak >= mgmtConfig.trailingDropPct) {
       return {

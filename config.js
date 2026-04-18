@@ -51,6 +51,7 @@ export const config = {
     minTokenAgeHours:   u.minTokenAgeHours   ?? null, // null = no minimum
     maxTokenAgeHours:   u.maxTokenAgeHours   ?? null, // null = no maximum
     athFilterPct:       u.athFilterPct       ?? null, // e.g. -20 = only deploy if price is >= 20% below ATH
+    minVolatility:      u.minVolatility      ?? null,  // hard-skip pools with volatility below this (data: vol<2 avg -0.37% PnL)
     maxVolatility:      u.maxVolatility      ?? 5,    // hard-skip pools with volatility above this (data: vol>5 avg -4% PnL)
     solOnlyPairs:       u.solOnlyPairs       ?? true, // only consider pools with SOL as quote token
     // Quality post-filter (applied after API, before LLM sees candidates)
@@ -73,6 +74,8 @@ export const config = {
     takeProfitFeePct:      u.takeProfitFeePct      ?? 5,
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
     minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close
+    maxHoldNegativeMinutes: u.maxHoldNegativeMinutes ?? null, // force close negative PnL positions after this many minutes
+    maxTrailingDurationMin: u.maxTrailingDurationMin ?? null, // max minutes trailing TP can run before force close
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.2,
@@ -186,6 +189,7 @@ export function reloadScreeningThresholds() {
     if (fresh.allowedLaunchpads !== undefined) s.allowedLaunchpads = fresh.allowedLaunchpads;
     if (fresh.blockedLaunchpads !== undefined) s.blockedLaunchpads = fresh.blockedLaunchpads;
     if (fresh.solOnlyPairs      !== undefined) s.solOnlyPairs      = fresh.solOnlyPairs;
+    if (fresh.minVolatility     != null) s.minVolatility     = fresh.minVolatility;
     if (fresh.maxVolatility     != null) s.maxVolatility     = fresh.maxVolatility;
   } catch { /* ignore */ }
 }

@@ -296,12 +296,19 @@ export async function getTopCandidates({ limit = 10 } = {}) {
 
   // ── Hard volatility filter ───────────────────────────────────
   // Data: vol>5 positions avg -4% PnL (BURNIE -7.73%, Freg -4.36%). vol≤5 are recoverable.
+  // Data: vol<2 positions avg -0.37% PnL — too quiet, fees don't cover gas.
   const maxVol = config.screening.maxVolatility ?? 5;
+  const minVol = config.screening.minVolatility ?? null;
   eligible.splice(0, eligible.length, ...eligible.filter((p) => {
     const vol = Number(p.volatility ?? 0);
     if (vol > maxVol) {
       log("screening", `Vol filter: dropped ${p.name} — volatility ${vol} > ${maxVol}`);
       pushFilteredReason(filteredOut, p, `volatility ${vol} > ${maxVol}`);
+      return false;
+    }
+    if (minVol != null && vol < minVol) {
+      log("screening", `Vol filter: dropped ${p.name} — volatility ${vol} < ${minVol} (too quiet)`);
+      pushFilteredReason(filteredOut, p, `volatility ${vol} < ${minVol}`);
       return false;
     }
     return true;

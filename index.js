@@ -312,6 +312,14 @@ export async function runManagementCycle({ silent = false } = {}) {
         actionMap.set(p.position, { action: "CLOSE", rule: 7, reason: "no fees after 15 min — dead pool" });
         continue;
       }
+      // Rule 8: max hold for negative PnL — data: 5 positions held >120m while negative = -14.10% total loss
+      const maxHoldNeg = config.management.maxHoldNegativeMinutes;
+      if (!pnlSuspect && maxHoldNeg != null &&
+          (p.age_minutes ?? 0) >= maxHoldNeg &&
+          (p.pnl_pct ?? 0) < 0) {
+        actionMap.set(p.position, { action: "CLOSE", rule: 8, reason: `max hold negative: ${p.age_minutes}m > ${maxHoldNeg}m with pnl ${p.pnl_pct.toFixed(2)}%` });
+        continue;
+      }
       // Claim rule
       if ((p.unclaimed_fees_usd ?? 0) >= config.management.minClaimAmount) {
         actionMap.set(p.position, { action: "CLAIM" });
