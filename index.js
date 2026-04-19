@@ -257,6 +257,8 @@ export async function runManagementCycle({ silent = false } = {}) {
         // Only re-analyze at each new integer % threshold
         if (currentFloor > lastCheckPct) {
           tpAnalysisQueue.push({ position: p, floor: currentFloor });
+        } else {
+          actionMap.set(p.position, { action: "STAY" });
         }
         // Between thresholds: hold (trailing handles the mechanical exit)
         continue;
@@ -346,6 +348,7 @@ export async function runManagementCycle({ silent = false } = {}) {
           actionMap.set(p.position, { action: "CLOSE", rule: 2, reason });
           log("cron", `[TP Analysis] ${p.pair}: CLOSE — ${reason}`);
         } else {
+          actionMap.set(p.position, { action: "STAY" });
           log("cron", `[TP Analysis] ${p.pair}: HOLD at ${p.pnl_pct.toFixed(2)}% (fees healthy, no exit signal) — next check at ${floor + 1}%`);
         }
       } catch (e) {
