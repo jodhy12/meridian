@@ -757,7 +757,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
         const sinceLastMgmt = Date.now() - (timers.managementLastRun ?? 0);
         if (sinceLastMgmt >= tpCooldownMs) {
           log("state", `[PnL poll] TP zone detected — triggering management (${Math.round(sinceLastMgmt / 1000)}s since last)`);
-          runManagementCycle({ silent: true }).catch((e) => log("cron_error", `TP-triggered management failed: ${e.message}`));
+          runManagementCycle({ silent: false }).catch((e) => log("cron_error", `TP-triggered management failed: ${e.message}`));
         }
       }
     } finally {
