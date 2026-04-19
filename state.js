@@ -457,6 +457,15 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     }
     const dropFromPeak = pos.peak_pnl_pct - currentPnlPct;
     if (dropFromPeak >= mgmtConfig.trailingDropPct) {
+      // Fast exit: skip confirmation when drop is >= 2x threshold (dump too fast to wait)
+      const fastExitMultiplier = mgmtConfig.trailingFastExitMultiplier ?? 2;
+      if (dropFromPeak >= mgmtConfig.trailingDropPct * fastExitMultiplier) {
+        return {
+          action: "TRAILING_TP",
+          reason: `Trailing TP (fast): peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${(mgmtConfig.trailingDropPct * fastExitMultiplier).toFixed(1)}% fast threshold)`,
+          confirmed_recheck: true, // skip confirmation — dump is severe
+        };
+      }
       return {
         action: "TRAILING_TP",
         reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${mgmtConfig.trailingDropPct}%)`,

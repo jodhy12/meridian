@@ -79,6 +79,8 @@ export const config = {
     maxTrailingDurationMin: u.maxTrailingDurationMin ?? null, // max minutes trailing TP can run before force close
     tpCheckIntervalMin:    u.tpCheckIntervalMin    ?? 1,    // management cycle interval when position is in TP/danger zone (faster than normal)
     dangerZonePct:         u.dangerZonePct         ?? 2,    // trigger fast polling when PnL drops below -X%
+    tokenCooldownHours:    u.tokenCooldownHours    ?? 24,   // block re-deploy into same token after loss for X hours
+    trailingFastExitMultiplier: u.trailingFastExitMultiplier ?? 2, // skip confirmation when drop >= X * trailingDropPct
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.2,

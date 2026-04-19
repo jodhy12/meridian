@@ -771,7 +771,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
         }
       }
       // TP/Danger zone fast polling — trigger management every 1min instead of normal interval
-      const fastCooldownMs = (config.management.tpCheckIntervalMin ?? 2) * 60 * 1000;
+      const fastCooldownMs = (config.management.tpCheckIntervalMin ?? 1) * 60 * 1000;
       if ((hasTPPosition || hasDangerPosition) && !_managementBusy) {
         const sinceLastMgmt = Date.now() - (timers.managementLastRun ?? 0);
         if (sinceLastMgmt >= fastCooldownMs) {

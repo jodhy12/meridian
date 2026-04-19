@@ -12,7 +12,7 @@ import {
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
-import { setPositionInstruction } from "../state.js";
+import { setPositionInstruction, getTrackedPositions } from "../state.js";
 
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
@@ -416,6 +416,34 @@ async function runSafetyChecks(name, args) {
           return {
             pass: false,
             reason: `Already holding base token ${args.base_mint} in another pool. One position per token only.`,
+          };
+        }
+      }
+
+      // Token cooldown: block re-deploy into same token within 24h after a loss
+      if (args.pool_name || args.base_mint) {
+        const cooldownHours = config.management.tokenCooldownHours ?? 24;
+        const cooldownMs = cooldownHours * 60 * 60 * 1000;
+        const allPositions = getTrackedPositions();
+        const recentLoss = allPositions.find((p) => {
+          if (!p.closed || !p.closed_at) return false;
+          const closedAgo = Date.now() - new Date(p.closed_at).getTime();
+          if (closedAgo > cooldownMs) return false;
+          // Match by pool_name (token name) or base_mint
+          const nameMatch = args.pool_name && p.pool_name &&
+            p.pool_name.replace(/-SOL$/, "").toLowerCase() === args.pool_name.replace(/-SOL$/, "").toLowerCase();
+          const mintMatch = args.base_mint && p.base_mint && p.base_mint === args.base_mint;
+          if (!nameMatch && !mintMatch) return false;
+          // Check if it was a loss (PnL negative or IL stop)
+          const wasLoss = p.notes?.some(n => n.includes("IL stop") || n.includes("stop loss") || n.includes("stale"));
+          const peakLow = (p.peak_pnl_pct ?? 0) < 1;
+          return wasLoss || peakLow;
+        });
+        if (recentLoss) {
+          const hoursAgo = Math.round((Date.now() - new Date(recentLoss.closed_at).getTime()) / 3600000);
+          return {
+            pass: false,
+            reason: `Token cooldown: ${recentLoss.pool_name} closed ${hoursAgo}h ago with poor performance. Wait ${cooldownHours}h before re-deploying.`,
           };
         }
       }
