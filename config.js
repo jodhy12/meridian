@@ -74,6 +74,7 @@ export const config = {
     takeProfitFeePct:      u.takeProfitFeePct      ?? 5,
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
     minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close
+    maxILPct:              u.maxILPct              ?? null,  // max IL% (position value drop excl. fees) before force close, e.g. -5
     maxHoldNegativeMinutes: u.maxHoldNegativeMinutes ?? null, // force close negative PnL positions after this many minutes
     maxTrailingDurationMin: u.maxTrailingDurationMin ?? null, // max minutes trailing TP can run before force close
     tpCheckIntervalMin:    u.tpCheckIntervalMin    ?? 1,    // management cycle interval when position is in TP zone (faster than normal)

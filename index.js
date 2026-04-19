@@ -232,6 +232,20 @@ export async function runManagementCycle({ silent = false } = {}) {
         return false;
       })();
 
+      // Rule 0: IL-based stop loss — detects value deterioration even when fees mask it
+      // IL = position value drop excluding fees. Fees can cover IL temporarily but if IL > maxILPct,
+      // the position is deteriorating and will likely get worse.
+      const maxIL = config.management.maxILPct;
+      if (maxIL != null && p.total_value_usd != null && tracked?.amount_sol) {
+        const initialDeposit = config.management.solMode ? tracked.amount_sol : tracked.initial_value_usd;
+        if (initialDeposit > 0) {
+          const ilPct = ((p.total_value_usd - initialDeposit) / initialDeposit) * 100;
+          if (ilPct <= maxIL) {
+            actionMap.set(p.position, { action: "CLOSE", rule: "0", reason: `IL stop: position value ${ilPct.toFixed(2)}% (excl fees) <= ${maxIL}% limit` });
+            continue;
+          }
+        }
+      }
       // Rule 1a: hard stop loss — no override (catastrophic protection)
       if (!pnlSuspect && p.pnl_pct != null && p.pnl_pct <= config.management.stopLossPct * 2) {
         actionMap.set(p.position, { action: "CLOSE", rule: "1a", reason: `hard stop loss ${p.pnl_pct.toFixed(2)}%` });
