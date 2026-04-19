@@ -77,7 +77,8 @@ export const config = {
     maxILPct:              u.maxILPct              ?? null,  // max IL% (position value drop excl. fees) before force close, e.g. -5
     maxHoldNegativeMinutes: u.maxHoldNegativeMinutes ?? null, // force close negative PnL positions after this many minutes
     maxTrailingDurationMin: u.maxTrailingDurationMin ?? null, // max minutes trailing TP can run before force close
-    tpCheckIntervalMin:    u.tpCheckIntervalMin    ?? 1,    // management cycle interval when position is in TP zone (faster than normal)
+    tpCheckIntervalMin:    u.tpCheckIntervalMin    ?? 1,    // management cycle interval when position is in TP/danger zone (faster than normal)
+    dangerZonePct:         u.dangerZonePct         ?? 2,    // trigger fast polling when PnL drops below -X%
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.2,

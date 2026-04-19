@@ -736,6 +736,8 @@ Summarize the current portfolio health, total fees earned, and performance of al
       const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
       if (!result?.positions?.length) return;
       let hasTPPosition = false;
+      let hasDangerPosition = false;
+      const dangerThresholdPct = -(config.management.dangerZonePct ?? 2);
       for (const p of result.positions) {
         if (!p.pnl_pct_suspicious && queuePeakConfirmation(p.position, p.pnl_pct)) {
           schedulePeakConfirmation(p.position);
@@ -743,6 +745,10 @@ Summarize the current portfolio health, total fees earned, and performance of al
         // Track if any position is in TP zone for faster polling
         if ((p.pnl_pct ?? 0) >= config.management.takeProfitFeePct) {
           hasTPPosition = true;
+        }
+        // Track if any position is in danger zone for faster polling
+        if ((p.pnl_pct ?? 0) <= dangerThresholdPct) {
+          hasDangerPosition = true;
         }
         const exit = updatePnlAndCheckExits(p.position, p, config.management);
         if (exit) {
@@ -764,14 +770,14 @@ Summarize the current portfolio health, total fees earned, and performance of al
           break;
         }
       }
-      // TP zone fast polling — trigger management every 2min instead of normal interval
-      // so TP analysis runs more frequently when profit is on the line
-      const tpCooldownMs = (config.management.tpCheckIntervalMin ?? 2) * 60 * 1000;
-      if (hasTPPosition && !_managementBusy) {
+      // TP/Danger zone fast polling — trigger management every 1min instead of normal interval
+      const fastCooldownMs = (config.management.tpCheckIntervalMin ?? 2) * 60 * 1000;
+      if ((hasTPPosition || hasDangerPosition) && !_managementBusy) {
         const sinceLastMgmt = Date.now() - (timers.managementLastRun ?? 0);
-        if (sinceLastMgmt >= tpCooldownMs) {
-          log("state", `[PnL poll] TP zone detected — triggering management (${Math.round(sinceLastMgmt / 1000)}s since last)`);
-          runManagementCycle({ silent: false }).catch((e) => log("cron_error", `TP-triggered management failed: ${e.message}`));
+        if (sinceLastMgmt >= fastCooldownMs) {
+          const zone = hasTPPosition ? "TP" : "DANGER";
+          log("state", `[PnL poll] ${zone} zone detected — triggering management (${Math.round(sinceLastMgmt / 1000)}s since last)`);
+          runManagementCycle({ silent: false }).catch((e) => log("cron_error", `${zone}-triggered management failed: ${e.message}`));
         }
       }
     } finally {
