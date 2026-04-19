@@ -71,6 +71,63 @@ function stripThink(text) {
   return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
 }
 
+/** Escape HTML special chars for Telegram */
+function escHTML(s) {
+  if (!s) return "";
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Format management report for Telegram (compact HTML) */
+function formatMgmtTelegram(positionData, actionMap, mgmtReport, solMode) {
+  const cur = solMode ? "◎" : "$";
+  const lines = positionData.map((p) => {
+    const act = actionMap.get(p.position) || { action: "STAY" };
+    const range = p.in_range ? "🟢" : "🔴";
+    const pnl = (p.pnl_pct ?? 0);
+    const pnlIcon = pnl >= 3 ? "🚀" : pnl >= 0 ? "📈" : pnl > -3 ? "📉" : "🔻";
+    const status = act.action === "CLOSE" ? "❌ CLOSE" : act.action === "CLAIM" ? "💰 CLAIM" : "✅ HOLD";
+    let line = `${range} <b>${escHTML(p.pair)}</b> ${pnlIcon} ${pnl.toFixed(2)}%\n` +
+      `   ${cur}${(p.total_value_usd ?? 0).toFixed(4)} | fee: ${cur}${(p.unclaimed_fees_usd ?? 0).toFixed(4)} | ${(p.age_minutes ?? 0)}m\n` +
+      `   ${status}`;
+    if (act.action === "CLOSE") line += ` — ${escHTML(act.reason?.substring(0, 50) ?? "")}`;
+    return line;
+  });
+
+  const totalVal = positionData.reduce((s, p) => s + (p.total_value_usd ?? 0), 0);
+  const totalFee = positionData.reduce((s, p) => s + (p.unclaimed_fees_usd ?? 0), 0);
+  const header = `🔄 <b>Management</b> | ${positionData.length} pos | ${cur}${totalVal.toFixed(4)} | fee ${cur}${totalFee.toFixed(4)}`;
+
+  return `${header}\n\n${lines.join("\n\n")}`;
+}
+
+/** Convert basic markdown to Telegram HTML (escape first, then convert) */
+function mdToTelegramHTML(text) {
+  if (!text) return text;
+  // Strip markdown that can't pair properly (unclosed bold/italic from truncation)
+  let s = escHTML(text);
+  s = s.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+  s = s.replace(/__(.+?)__/g, "<i>$1</i>");
+  s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+  // Clean up leftover unpaired markers (from truncation)
+  s = s.replace(/\*\*[^*]*$/g, "");
+  s = s.replace(/__[^_]*$/g, "");
+  s = s.replace(/`[^`]*$/g, "");
+  return s;
+}
+
+/** Format screening report for Telegram (compact HTML) */
+function formatScreenTelegram(rawReport) {
+  if (!rawReport) return null;
+  const text = stripThink(rawReport);
+  // Truncate at line boundary to avoid cutting in the middle of markdown
+  let truncated = text;
+  if (text.length > 500) {
+    const cut = text.lastIndexOf("\n", 500);
+    truncated = text.substring(0, cut > 200 ? cut : 500) + "…";
+  }
+  return `🔍 <b>Screening</b>\n\n${mdToTelegramHTML(truncated)}`;
+}
+
 
 function schedulePeakConfirmation(positionAddress) {
   if (!positionAddress || _peakConfirmTimers.has(positionAddress)) return;
@@ -160,6 +217,8 @@ export async function runManagementCycle({ silent = false } = {}) {
   log("cron", "Starting management cycle");
   let mgmtReport = null;
   let positions = [];
+  let positionData = [];
+  let actionMap = new Map();
   let liveMessage = null;
   const screeningCooldownMs = 5 * 60 * 1000;
 
@@ -178,7 +237,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     }
 
     // Snapshot + load pool memory
-    const positionData = positions.map((p) => {
+    positionData = positions.map((p) => {
       recordPositionSnapshot(p.pool, p);
       return { ...p, recall: recallForPool(p.pool) };
     });
@@ -204,7 +263,7 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     // ── Deterministic rule checks (no LLM) ──────────────────────────
     // action: CLOSE | CLAIM | STAY | INSTRUCTION (needs LLM)
-    const actionMap = new Map();
+    actionMap = new Map();
     const tpAnalysisQueue = [];
     for (const p of positionData) {
       // Hard exit — highest priority
@@ -457,8 +516,11 @@ After executing, write a brief one-line result per position.
     _managementBusy = false;
     if (!silent && telegramEnabled()) {
       if (mgmtReport) {
+        const formatted = positionData.length > 0
+          ? formatMgmtTelegram(positionData, actionMap, mgmtReport, config.management.solMode)
+          : `🔄 <b>Management</b>\n\n${mdToTelegramHTML(stripThink(mgmtReport).substring(0, 500))}`;
         if (liveMessage) await liveMessage.finalize(stripThink(mgmtReport)).catch(() => {});
-        else sendMessage(`🔄 Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => { });
+        else sendHTML(formatted).catch(() => { });
       }
       for (const p of positions) {
         if (!p.in_range && p.minutes_out_of_range >= config.management.outOfRangeWaitMinutes) {
@@ -682,7 +744,7 @@ Skipped: <comma list>
     _screeningBusy = false;
     if (!silent && telegramEnabled() && screenReport) {
       if (liveMessage) await liveMessage.finalize(stripThink(screenReport)).catch(() => {});
-      else sendMessage(`🔍 Screening Cycle\n\n${stripThink(screenReport)}`).catch(() => {});
+      else sendHTML(formatScreenTelegram(screenReport)).catch(() => {});
     }
   }
 
