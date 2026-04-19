@@ -721,9 +721,14 @@ Summarize the current portfolio health, total fees earned, and performance of al
     try {
       const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
       if (!result?.positions?.length) return;
+      let hasTPPosition = false;
       for (const p of result.positions) {
         if (!p.pnl_pct_suspicious && queuePeakConfirmation(p.position, p.pnl_pct)) {
           schedulePeakConfirmation(p.position);
+        }
+        // Track if any position is in TP zone for faster polling
+        if ((p.pnl_pct ?? 0) >= config.management.takeProfitFeePct) {
+          hasTPPosition = true;
         }
         const exit = updatePnlAndCheckExits(p.position, p, config.management);
         if (exit) {
@@ -743,6 +748,16 @@ Summarize the current portfolio health, total fees earned, and performance of al
             log("state", `[PnL poll] Exit alert: ${p.pair} — ${exit.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);
           }
           break;
+        }
+      }
+      // TP zone fast polling — trigger management every 2min instead of normal interval
+      // so TP analysis runs more frequently when profit is on the line
+      const tpCooldownMs = (config.management.tpCheckIntervalMin ?? 2) * 60 * 1000;
+      if (hasTPPosition && !_managementBusy) {
+        const sinceLastMgmt = Date.now() - (timers.managementLastRun ?? 0);
+        if (sinceLastMgmt >= tpCooldownMs) {
+          log("state", `[PnL poll] TP zone detected — triggering management (${Math.round(sinceLastMgmt / 1000)}s since last)`);
+          runManagementCycle({ silent: true }).catch((e) => log("cron_error", `TP-triggered management failed: ${e.message}`));
         }
       }
     } finally {
