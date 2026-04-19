@@ -57,6 +57,7 @@ export async function discoverPools({
   const categories = [
     { category: s.category || "trending", filters: strictFilters },
     { category: "new", filters: looseFilters },
+    { category: "top", filters: strictFilters },
   ];
 
   const results = await Promise.allSettled(
