@@ -223,9 +223,6 @@ export async function runManagementCycle({ silent = false } = {}) {
   const screeningCooldownMs = 5 * 60 * 1000;
 
   try {
-    if (!silent && telegramEnabled()) {
-      liveMessage = await createLiveMessage("🔄 Management Cycle", "Evaluating positions...");
-    }
     const livePositions = await getMyPositions({ force: true }).catch(() => null);
     positions = livePositions?.positions || [];
     timers._lastKnownPositionCount = positions.length;
@@ -241,6 +238,10 @@ export async function runManagementCycle({ silent = false } = {}) {
       mgmtReport = "No open positions. Triggering screening cycle.";
       runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
       return mgmtReport;
+    }
+
+    if (!silent && telegramEnabled()) {
+      liveMessage = await createLiveMessage("🔄 Management Cycle", "Evaluating positions...");
     }
 
     // Snapshot + load pool memory
@@ -768,6 +769,7 @@ export function startCronJobs() {
   // Dynamic management: run more frequently when holding volatile positions
   const mgmtTask = cron.schedule("* * * * *", async () => {
     if (_managementBusy) return;
+    if ((timers._lastKnownPositionCount ?? 0) === 0) return; // skip when no positions
     const normalInterval = config.schedule.managementIntervalMin;
     const maxVol = timers._lastKnownMaxVolatility ?? 0;
     const interval = maxVol >= 3 ? 2 : normalInterval;
