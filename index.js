@@ -234,10 +234,11 @@ export async function runManagementCycle({ silent = false } = {}) {
     timers._lastKnownMaxVolatility = trackedVols.length > 0 ? Math.max(...trackedVols) : 0;
 
     if (positions.length === 0) {
-      log("cron", "No open positions — skipping management, screening handles deploy");
+      log("cron", "No open positions — triggering screening cycle");
       if (!silent && telegramEnabled()) {
-        sendHTML("🔄 <b>Management</b>\n\nNo open positions — waiting for screening.").catch(() => {});
+        sendHTML("🔄 <b>Management</b>\n\nNo open positions — triggering screening.").catch(() => {});
       }
+      runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
       return null; // finally block will release _managementBusy
     }
 
