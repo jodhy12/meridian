@@ -228,6 +228,13 @@ export async function runManagementCycle({ silent = false } = {}) {
     }
     const livePositions = await getMyPositions({ force: true }).catch(() => null);
     positions = livePositions?.positions || [];
+    timers._lastKnownPositionCount = positions.length;
+    // Track max volatility for dynamic management interval
+    const trackedVols = positions.map(p => {
+      const tracked = getTrackedPosition(p.position);
+      return tracked?.volatility ?? 0;
+    });
+    timers._lastKnownMaxVolatility = trackedVols.length > 0 ? Math.max(...trackedVols) : 0;
 
     if (positions.length === 0) {
       log("cron", "No open positions — triggering screening cycle");
@@ -408,7 +415,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     for (const { position: p, floor } of tpAnalysisQueue) {
       try {
         await new Promise(r => setTimeout(r, 500)); // GeckoTerminal rate limit
-        const tech = await getTechnicalSignals({ pool_address: p.pool_address || p.pool, timeframe: "5m" });
+        const tech = await getTechnicalSignals({ pool_address: p.pool_address || p.pool, timeframe: "15m" });
         const exitSignal = tech?.exit_signal ?? false;
         const volSpike = tech?.indicators?.volume_spike?.is_spike ?? false;
         const feeDying = (p.fee_per_tvl_24h ?? 999) < config.management.minFeePerTvl24h;
@@ -754,10 +761,17 @@ Skipped: <comma list>
 export function startCronJobs() {
   stopCronJobs(); // stop any running tasks before (re)starting
 
-  const mgmtTask = cron.schedule(`*/${Math.max(1, config.schedule.managementIntervalMin)} * * * *`, async () => {
+  // Dynamic management: run more frequently when holding volatile positions
+  const mgmtTask = cron.schedule("* * * * *", async () => {
     if (_managementBusy) return;
-    timers.managementLastRun = Date.now();
-    await runManagementCycle();
+    const normalInterval = config.schedule.managementIntervalMin;
+    const maxVol = timers._lastKnownMaxVolatility ?? 0;
+    const interval = maxVol >= 3 ? 2 : normalInterval;
+    const sinceLastMgmt = (Date.now() - (timers.managementLastRun ?? 0)) / 60000;
+    if (sinceLastMgmt >= interval) {
+      timers.managementLastRun = Date.now();
+      await runManagementCycle();
+    }
   });
 
   const screenTask = cron.schedule(`*/${Math.max(1, config.schedule.screeningIntervalMin)} * * * *`, runScreeningCycle);
