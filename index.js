@@ -234,10 +234,8 @@ export async function runManagementCycle({ silent = false } = {}) {
     timers._lastKnownMaxVolatility = trackedVols.length > 0 ? Math.max(...trackedVols) : 0;
 
     if (positions.length === 0) {
-      log("cron", "No open positions — triggering screening cycle");
-      mgmtReport = "No open positions. Triggering screening cycle.";
-      runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
-      return mgmtReport;
+      log("cron", "No open positions — skipping management, screening handles deploy");
+      return null; // finally block will release _managementBusy
     }
 
     if (!silent && telegramEnabled()) {
@@ -775,7 +773,6 @@ export function startCronJobs() {
   // Dynamic management: run more frequently when holding volatile positions
   const mgmtTask = cron.schedule("* * * * *", async () => {
     if (_managementBusy) return;
-    if ((timers._lastKnownPositionCount ?? 0) === 0) return; // skip when no positions
     const normalInterval = config.schedule.managementIntervalMin;
     const maxVol = timers._lastKnownMaxVolatility ?? 0;
     const interval = maxVol >= 3 ? 2 : normalInterval;
@@ -1352,6 +1349,9 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   maybeRunMissedBriefing().catch(() => { });
   startPolling(telegramHandler);
   (async () => {
+    // Block screening cron while startup agent runs (prevents race / double deploy)
+    _screeningBusy = true;
+    _screeningLastTriggered = Date.now();
     try {
       const startupStep3 = process.env.DRY_RUN === "true"
         ? `3. Ignore wallet SOL threshold in dry run: get_top_candidates then simulate deploy ${DEPLOY} SOL.`
@@ -1362,6 +1362,14 @@ STARTUP CHECK
       `, config.llm.maxSteps, [], "SCREENER");
     } catch (e) {
       log("startup_error", e.message);
+    } finally {
+      // Refresh position count so management/screening crons pick up any deploy
+      getMyPositions({ force: true }).then(r => {
+        timers._lastKnownPositionCount = r?.positions?.length ?? 0;
+        const vols = (r?.positions || []).map(p => getTrackedPosition(p.position)?.volatility ?? 0);
+        timers._lastKnownMaxVolatility = vols.length > 0 ? Math.max(...vols) : 0;
+      }).catch(() => {});
+      _screeningBusy = false;
     }
   })();
 }
