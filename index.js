@@ -235,6 +235,9 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     if (positions.length === 0) {
       log("cron", "No open positions — skipping management, screening handles deploy");
+      if (!silent && telegramEnabled()) {
+        sendHTML("🔄 <b>Management</b>\n\nNo open positions — waiting for screening.").catch(() => {});
+      }
       return null; // finally block will release _managementBusy
     }
 
@@ -770,17 +773,11 @@ Skipped: <comma list>
 export function startCronJobs() {
   stopCronJobs(); // stop any running tasks before (re)starting
 
-  // Dynamic management: run more frequently when holding volatile positions
-  const mgmtTask = cron.schedule("* * * * *", async () => {
+  // Management cron — runs at clean intervals (:00, :05, :10, etc.)
+  // Fast polling for TP/danger zones is handled by the PnL poller below
+  const mgmtTask = cron.schedule(`*/${Math.max(1, config.schedule.managementIntervalMin)} * * * *`, async () => {
     if (_managementBusy) return;
-    const normalInterval = config.schedule.managementIntervalMin;
-    const maxVol = timers._lastKnownMaxVolatility ?? 0;
-    const interval = maxVol >= 3 ? 2 : normalInterval;
-    const sinceLastMgmt = (Date.now() - (timers.managementLastRun ?? 0)) / 60000;
-    if (sinceLastMgmt >= interval) {
-      timers.managementLastRun = Date.now();
-      await runManagementCycle();
-    }
+    await runManagementCycle();
   });
 
   const screenTask = cron.schedule(`*/${Math.max(1, config.schedule.screeningIntervalMin)} * * * *`, runScreeningCycle);
@@ -816,6 +813,7 @@ Summarize the current portfolio health, total fees earned, and performance of al
   let _pnlPollBusy = false;
   const pnlPollInterval = setInterval(async () => {
     if (_managementBusy || _screeningBusy || _pnlPollBusy) return;
+    if ((timers._lastKnownPositionCount ?? 0) === 0) return; // no positions → skip RPC
     _pnlPollBusy = true;
     try {
       const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
@@ -855,12 +853,17 @@ Summarize the current portfolio health, total fees earned, and performance of al
           break;
         }
       }
-      // TP/Danger zone fast polling — trigger management every 1min instead of normal interval
+      // Fast polling — trigger management more frequently for TP/danger/volatile positions
       const fastCooldownMs = (config.management.tpCheckIntervalMin ?? 1) * 60 * 1000;
-      if ((hasTPPosition || hasDangerPosition) && !_managementBusy) {
+      const maxVol = timers._lastKnownMaxVolatility ?? 0;
+      const volatileCooldownMs = 2 * 60 * 1000; // 2 min for volatile positions
+      const needsFast = hasTPPosition || hasDangerPosition;
+      const needsVolatileFast = maxVol >= 3;
+      if ((needsFast || needsVolatileFast) && !_managementBusy) {
+        const cooldown = needsFast ? fastCooldownMs : volatileCooldownMs;
         const sinceLastMgmt = Date.now() - (timers.managementLastRun ?? 0);
-        if (sinceLastMgmt >= fastCooldownMs) {
-          const zone = hasTPPosition ? "TP" : "DANGER";
+        if (sinceLastMgmt >= cooldown) {
+          const zone = hasTPPosition ? "TP" : hasDangerPosition ? "DANGER" : "VOLATILE";
           log("state", `[PnL poll] ${zone} zone detected — triggering management (${Math.round(sinceLastMgmt / 1000)}s since last)`);
           runManagementCycle({ silent: false }).catch((e) => log("cron_error", `${zone}-triggered management failed: ${e.message}`));
         }

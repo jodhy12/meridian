@@ -90,6 +90,9 @@ export const config = {
     trailingTriggerPct:    u.trailingTriggerPct    ?? 3,    // activate trailing at X% PnL
     trailingDropPct:       u.trailingDropPct       ?? 3.0,  // close when drops X% from peak
     pnlSanityMaxDiffPct:   u.pnlSanityMaxDiffPct   ?? 5,    // max allowed diff between reported and derived pnl % before ignoring a tick
+    // Early IL detection — catch fast dumps before IL stop triggers
+    earlyILMaxAgeMin:      u.earlyILMaxAgeMin      ?? 20,   // only check within first X minutes
+    earlyILRatePerMin:     u.earlyILRatePerMin     ?? 0.15, // close if IL rate >= X %/min (data: traps avg 0.15-0.27%/min)
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD
     solMode:               u.solMode               ?? false,
   },

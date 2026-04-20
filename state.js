@@ -441,6 +441,30 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     };
   }
 
+  // ── Early IL detection ────────────────────────────────────────
+  // Data: 4 yield traps all had IL rate > 0.1%/min in first 20 min
+  // (ASTROID -6.50% in 46m, XRP -8.36% in 31m, Freg -7.32% in 60m)
+  // Catches fast dumps before -5% IL stop, saving ~3% avg loss
+  const earlyILMaxAge = mgmtConfig.earlyILMaxAgeMin ?? 20;
+  const earlyILRateThreshold = mgmtConfig.earlyILRatePerMin ?? 0.15; // %/min
+  if (positionData.total_value_usd != null && pos.deployed_at) {
+    const ageMin = (Date.now() - new Date(pos.deployed_at).getTime()) / 60000;
+    if (ageMin >= 5 && ageMin <= earlyILMaxAge) { // need at least 5 min of data
+      const initialValue = mgmtConfig.solMode ? pos.amount_sol : pos.initial_value_usd;
+      if (initialValue > 0) {
+        const ilPct = ((positionData.total_value_usd - initialValue) / initialValue) * 100;
+        const ilRatePerMin = Math.abs(ilPct) / ageMin;
+        if (ilPct < -1 && ilRatePerMin >= earlyILRateThreshold) {
+          return {
+            action: "EARLY_IL",
+            reason: `Early IL: value ${ilPct.toFixed(2)}% in ${Math.round(ageMin)}m (rate ${ilRatePerMin.toFixed(3)}%/min >= ${earlyILRateThreshold}%/min) — fast dump detected`,
+            confirmed_recheck: true,
+          };
+        }
+      }
+    }
+  }
+
   // ── Trailing TP ────────────────────────────────────────────────
   if (!pnl_pct_suspicious && pos.trailing_active) {
     // Max trailing duration cap — data: BURNIE held 393m (-7.73%), BabyTrump 346m (-1.43%)
