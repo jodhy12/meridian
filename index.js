@@ -509,9 +509,13 @@ After executing, write a brief one-line result per position.
       await liveMessage?.note("No tool actions needed.");
     }
 
-    // Trigger screening after management
+    // Refresh position count + volatility after actions
     const afterPositions = await getMyPositions({ force: true }).catch(() => null);
     const afterCount = afterPositions?.positions?.length ?? 0;
+    timers._lastKnownPositionCount = afterCount;
+    const afterVols = (afterPositions?.positions || []).map(p => getTrackedPosition(p.position)?.volatility ?? 0);
+    timers._lastKnownMaxVolatility = afterVols.length > 0 ? Math.max(...afterVols) : 0;
+
     if (afterCount < config.risk.maxPositions && Date.now() - _screeningLastTriggered > screeningCooldownMs) {
       log("cron", `Post-management: ${afterCount}/${config.risk.maxPositions} positions — triggering screening`);
       runScreeningCycle().catch((e) => log("cron_error", `Triggered screening failed: ${e.message}`));
