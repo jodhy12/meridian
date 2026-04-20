@@ -754,6 +754,12 @@ Skipped: <comma list>
     screenReport = `Screening cycle failed: ${error.message}`;
   } finally {
     _screeningBusy = false;
+    // Refresh position count so management cron picks up newly deployed positions
+    getMyPositions({ force: true }).then(r => {
+      timers._lastKnownPositionCount = r?.positions?.length ?? 0;
+      const vols = (r?.positions || []).map(p => getTrackedPosition(p.position)?.volatility ?? 0);
+      timers._lastKnownMaxVolatility = vols.length > 0 ? Math.max(...vols) : 0;
+    }).catch(() => {});
     if (!silent && telegramEnabled() && screenReport) {
       if (liveMessage) await liveMessage.finalize(stripThink(screenReport)).catch(() => {});
       else sendHTML(formatScreenTelegram(screenReport)).catch(() => {});
