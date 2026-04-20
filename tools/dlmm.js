@@ -505,19 +505,19 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
           upper_bin:          upperBin,
           active_bin:         activeBin,
           in_range:           binData ? !binData.isOutOfRange : !isOOR,
-          unclaimed_fees_usd: lpData
-            ? Math.round((
-                config.management.solMode
-                  ? safeNum(lpData.unCollectedFeeNative)
-                  : safeNum(lpData.unCollectedFee)
-              ) * 10000) / 10000
-            : binData
-            ? Math.round((
-                config.management.solMode
-                  ? parseFloat(binData.unrealizedPnl?.unclaimedFeeTokenX?.amountSol || 0) + parseFloat(binData.unrealizedPnl?.unclaimedFeeTokenY?.amountSol || 0)
-                  : parseFloat(binData.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(binData.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)
-              ) * 10000) / 10000
-            : null,
+          unclaimed_fees_usd: (() => {
+            const fromLp = lpData
+              ? Math.round((config.management.solMode ? safeNum(lpData.unCollectedFeeNative) : safeNum(lpData.unCollectedFee)) * 10000) / 10000
+              : 0;
+            if (fromLp > 0) return fromLp;
+            // Fallback to binData if lpData returned 0
+            if (binData) return Math.round((
+              config.management.solMode
+                ? parseFloat(binData.unrealizedPnl?.unclaimedFeeTokenX?.amountSol || 0) + parseFloat(binData.unrealizedPnl?.unclaimedFeeTokenY?.amountSol || 0)
+                : parseFloat(binData.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(binData.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)
+            ) * 10000) / 10000;
+            return 0;
+          })(),
           total_value_usd:    lpData
             ? Math.round((
                 config.management.solMode
