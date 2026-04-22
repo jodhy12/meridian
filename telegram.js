@@ -353,17 +353,32 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlPct, closeReason = "" }) {
+export async function notifyClose({ pair, pnlUsd, pnlPct, feesUsd = 0, amountSol = 0, strategy = "", holdMinutes = 0, closeReason = "" }) {
   if (hasActiveLiveMessage()) return;
   const sign = pnlUsd >= 0 ? "+" : "";
+  const emoji = pnlUsd >= 0 ? "🟢" : "🔴";
   const isStopLoss = closeReason.toLowerCase().includes("stop loss");
-  const pnlDisplay = isStopLoss && pnlPct > -10
-    ? `${(pnlPct ?? 0).toFixed(2)}% ⚠️ (stop loss — actual loss may be higher)`
+  const pnlPctStr = isStopLoss && pnlPct > -10
+    ? `${(pnlPct ?? 0).toFixed(2)}% ⚠️`
     : `${sign}${(pnlPct ?? 0).toFixed(2)}%`;
-  await sendHTML(
-    `🔒 <b>Closed</b> ${pair}\n` +
-    `PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${pnlDisplay})`
-  );
+
+  // Format hold time as Xh Ym
+  const hours = Math.floor(holdMinutes / 60);
+  const mins = holdMinutes % 60;
+  const holdStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+
+  const lines = [
+    `${emoji} <b>Position Closed</b> — ${pair}`,
+    ``,
+    `💵 PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${pnlPctStr})`,
+    `💰 Fees earned: $${(feesUsd ?? 0).toFixed(2)}`,
+  ];
+  if (amountSol > 0) lines.push(`🏦 Deployed: ${amountSol} SOL`);
+  if (strategy) lines.push(`📐 Strategy: ${strategy}`);
+  lines.push(`⏱ Hold time: ${holdStr}`);
+  if (closeReason) lines.push(`📋 Reason: ${closeReason}`);
+
+  await sendHTML(lines.join("\n"));
 }
 
 export async function notifyTechnicalSignal({ pair, timeframe, rsi2, bbUpper, currentClose, macdGreen, exitReason }) {

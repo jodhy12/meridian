@@ -396,12 +396,13 @@ export async function runManagementCycle({ silent = false } = {}) {
         actionMap.set(p.position, { action: "CLOSE", rule: 6, reason: "stale — IL > fees" });
         continue;
       }
-      // Rule 7: "nyayur" check — in range but generating zero fees after 15 min → dead pool
+      // Rule 7: "nyayur" check — in range but generating zero fees after 10 min → dead pool
+      // Data: 6 dead pools avg held 18m before detection — catch earlier
       if (p.in_range &&
-          (p.age_minutes ?? 0) >= 15 &&
+          (p.age_minutes ?? 0) >= 10 &&
           (p.fee_per_tvl_24h ?? -1) === 0 &&
           (p.unclaimed_fees_usd ?? 0) < 0.001) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 7, reason: "no fees after 15 min — dead pool" });
+        actionMap.set(p.position, { action: "CLOSE", rule: 7, reason: "no fees after 10 min — dead pool" });
         continue;
       }
       // Rule 8: max hold for negative PnL — data: 5 positions held >120m while negative = -14.10% total loss
@@ -672,6 +673,23 @@ export async function runScreeningCycle({ silent = false } = {}) {
       pool._tech_ok    = !tech?.entry_warnings?.length;
       pool._tech_warn  = tech?.entry_warnings ?? [];
       pool._exit_signal = tech?.exit_signal ?? false;
+      pool._tech_snapshot = tech ? {
+        rsi2: tech.indicators?.rsi2 ?? null,
+        supertrend: tech.indicators?.supertrend?.direction ?? null,
+        vwap_dist_pct: tech.indicators?.vwap?.distance_pct ?? null,
+        volume_spike: tech.indicators?.volume_spike?.is_spike ?? false,
+      } : null;
+
+      // 2f. Hard filter — bearish trend or overbought entry
+      // Data: 9 losers had no entry filter; supertrend bearish = price likely to drop
+      if (pool._exit_signal) {
+        log("screening", `Filtered ${pool.name} — overbought at entry (exit signal active)`);
+        continue;
+      }
+      if (tech?.indicators?.supertrend && !tech.indicators.supertrend.is_bullish) {
+        log("screening", `Filtered ${pool.name} — bearish supertrend (${tech.indicators.supertrend.direction})`);
+        continue;
+      }
 
       enriched.push({ pool, ti });
       await new Promise(r => setTimeout(r, 500)); // GeckoTerminal rate limit

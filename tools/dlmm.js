@@ -107,6 +107,7 @@ export async function deployPosition({
   fee_tvl_ratio,
   organic_score,
   initial_value_usd,
+  signal_snapshot,
 }) {
   pool_address = normalizeMint(pool_address);
   const activeStrategy = strategy || config.strategy.strategy;
@@ -256,6 +257,7 @@ export async function deployPosition({
       amount_x: finalAmountX,
       active_bin: activeBin.binId,
       initial_value_usd,
+      signal_snapshot: signal_snapshot || null,
     });
 
     const actualBinStep = pool.lbPair.binStep;
@@ -948,6 +950,10 @@ export async function closePosition({ position_address, reason }) {
         txs: txHashes,
         pnl_usd: pnlUsd,
         pnl_pct: pnlPct,
+        fees_earned_usd: feesUsd,
+        amount_sol: tracked.amount_sol,
+        strategy: tracked.strategy,
+        hold_minutes: minutesHeld,
         base_mint: pool.lbPair.tokenXMint.toString(),
       };
     }

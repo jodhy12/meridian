@@ -73,10 +73,10 @@ export const config = {
     stopLossPct:           u.stopLossPct           ?? u.emergencyPriceDropPct ?? -50,
     takeProfitFeePct:      u.takeProfitFeePct      ?? 5,
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
-    minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close
+    minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 45, // minutes before low yield can trigger close (data: 87% positions $0 fees)
     maxILPct:              u.maxILPct              ?? null,  // max IL% (position value drop excl. fees) before force close, e.g. -5
     maxHoldNegativeMinutes: u.maxHoldNegativeMinutes ?? null, // force close negative PnL positions after this many minutes
-    maxHoldFlatMinutes:    u.maxHoldFlatMinutes    ?? 180,  // force close if held > X min and peak < 1% (data: ADHD 406m, 我的刀盾 964m — nyayur)
+    maxHoldFlatMinutes:    u.maxHoldFlatMinutes    ?? 120,  // force close if held > X min and peak < 1% (data: 74% positions flat, avg hold 77m)
     maxTrailingDurationMin: u.maxTrailingDurationMin ?? null, // max minutes trailing TP can run before force close
     tpCheckIntervalMin:    u.tpCheckIntervalMin    ?? 1,    // management cycle interval when position is in TP/danger zone (faster than normal)
     dangerZonePct:         u.dangerZonePct         ?? 2,    // trigger fast polling when PnL drops below -X%
@@ -89,7 +89,7 @@ export const config = {
     // Trailing take-profit
     trailingTakeProfit:    u.trailingTakeProfit    ?? true,
     trailingTriggerPct:    u.trailingTriggerPct    ?? 3,    // activate trailing at X% PnL
-    trailingDropPct:       u.trailingDropPct       ?? 3.0,  // close when drops X% from peak
+    trailingDropPct:       u.trailingDropPct       ?? 2.0,  // close when drops X% from peak
     pnlSanityMaxDiffPct:   u.pnlSanityMaxDiffPct   ?? 5,    // max allowed diff between reported and derived pnl % before ignoring a tick
     // Early IL detection — catch fast dumps before IL stop triggers
     earlyILMaxAgeMin:      u.earlyILMaxAgeMin      ?? 20,   // only check within first X minutes

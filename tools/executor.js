@@ -296,6 +296,21 @@ export async function executeTool(name, args) {
     }
   }
 
+  // ─── Pre-execute enrichment ────────────────
+  if (name === "deploy_position" && args.pool_address && !args.signal_snapshot) {
+    try {
+      const tech = await getTechnicalSignals({ pool_address: args.pool_address, timeframe: "15m" });
+      if (tech && !tech.error) {
+        args.signal_snapshot = {
+          rsi2: tech.indicators?.rsi2 ?? null,
+          supertrend: tech.indicators?.supertrend?.direction ?? null,
+          vwap_dist_pct: tech.indicators?.vwap?.distance_pct ?? null,
+          volume_spike: tech.indicators?.volume_spike?.is_spike ?? false,
+        };
+      }
+    } catch { /* best effort */ }
+  }
+
   // ─── Execute ──────────────────────────────
   try {
     const result = await fn(args);
@@ -316,7 +331,7 @@ export async function executeTool(name, args) {
       } else if (name === "deploy_position") {
         notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, binStep: result.bin_step, baseFee: result.base_fee }).catch(() => {});
       } else if (name === "close_position") {
-        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, closeReason: args.reason ?? "" }).catch(() => {});
+        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, feesUsd: result.fees_earned_usd ?? 0, amountSol: result.amount_sol ?? 0, strategy: result.strategy ?? "", holdMinutes: result.hold_minutes ?? 0, closeReason: args.reason ?? "" }).catch(() => {});
         // Note low-yield closes in pool memory so screener avoids redeploying
         if (args.reason && args.reason.toLowerCase().includes("yield")) {
           const poolAddr = result.pool || args.pool_address;
@@ -434,8 +449,11 @@ async function runSafetyChecks(name, args) {
             p.pool_name.replace(/-SOL$/, "").toLowerCase() === args.pool_name.replace(/-SOL$/, "").toLowerCase();
           const mintMatch = args.base_mint && p.base_mint && p.base_mint === args.base_mint;
           if (!nameMatch && !mintMatch) return false;
-          // Check if it was a loss (PnL negative or IL stop)
-          const wasLoss = p.notes?.some(n => n.includes("IL stop") || n.includes("stop loss") || n.includes("stale"));
+          // Check if it was a loss, flat, or poor performer
+          const wasLoss = p.notes?.some(n =>
+            n.includes("IL stop") || n.includes("stop loss") || n.includes("stale") ||
+            n.includes("low yield") || n.includes("dead pool") || n.includes("no fees")
+          );
           const peakLow = (p.peak_pnl_pct ?? 0) < 1;
           return wasLoss || peakLow;
         });
