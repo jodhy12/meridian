@@ -334,6 +334,12 @@ export function stopPolling() {
   _polling = false;
 }
 
+// ─── HTML escape helper ─────────────────────────────────────────
+function esc(s) {
+  if (!s) return "";
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 // ─── Notification helpers ────────────────────────────────────────
 export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, binStep, baseFee }) {
   if (hasActiveLiveMessage()) return;
@@ -344,7 +350,7 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
     ? `Bin step: ${binStep ?? "?"}  |  Base fee: ${baseFee != null ? baseFee + "%" : "?"}\n`
     : "";
   await sendHTML(
-    `✅ <b>Deployed</b> ${pair}\n` +
+    `✅ <b>Deployed</b> ${esc(pair)}\n` +
     `Amount: ${amountSol} SOL\n` +
     priceStr +
     poolStr +
@@ -357,7 +363,7 @@ export async function notifyClose({ pair, pnlUsd, pnlPct, feesUsd = 0, amountSol
   if (hasActiveLiveMessage()) return;
   const sign = pnlUsd >= 0 ? "+" : "";
   const emoji = pnlUsd >= 0 ? "🟢" : "🔴";
-  const isStopLoss = closeReason.toLowerCase().includes("stop loss");
+  const isStopLoss = String(closeReason).toLowerCase().includes("stop loss");
   const pnlPctStr = isStopLoss && pnlPct > -10
     ? `${(pnlPct ?? 0).toFixed(2)}% ⚠️`
     : `${sign}${(pnlPct ?? 0).toFixed(2)}%`;
@@ -368,22 +374,21 @@ export async function notifyClose({ pair, pnlUsd, pnlPct, feesUsd = 0, amountSol
   const holdStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
 
   const lines = [
-    `${emoji} <b>Position Closed</b> — ${pair}`,
+    `${emoji} <b>Position Closed</b> — ${esc(pair)}`,
     ``,
     `💵 PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${pnlPctStr})`,
     `💰 Fees earned: $${(feesUsd ?? 0).toFixed(2)}`,
   ];
   if (amountSol > 0) lines.push(`🏦 Deployed: ${amountSol} SOL`);
-  if (strategy) lines.push(`📐 Strategy: ${strategy}`);
+  if (strategy) lines.push(`📐 Strategy: ${esc(strategy)}`);
   lines.push(`⏱ Hold time: ${holdStr}`);
-  if (closeReason) lines.push(`📋 Reason: ${closeReason}`);
+  if (closeReason) lines.push(`📋 Reason: ${esc(closeReason)}`);
 
   await sendHTML(lines.join("\n"));
 }
 
 export async function notifyTechnicalSignal({ pair, timeframe, rsi2, bbUpper, currentClose, macdGreen, exitReason }) {
   if (hasActiveLiveMessage()) return;
-  const esc = (s) => String(s ?? "?").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   await sendHTML(
     `⚡ <b>Technical Exit Signal</b> ${esc(pair)} [${esc(timeframe)}]\n` +
     `RSI(2): ${rsi2?.toFixed(1) ?? "?"} | BB Upper: ${bbUpper?.toFixed(4) ?? "?"} | Close: ${currentClose?.toFixed(4) ?? "?"}\n` +
@@ -395,7 +400,7 @@ export async function notifyTechnicalSignal({ pair, timeframe, rsi2, bbUpper, cu
 export async function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOut, tx }) {
   if (hasActiveLiveMessage()) return;
   await sendHTML(
-    `🔄 <b>Swapped</b> ${inputSymbol} → ${outputSymbol}\n` +
+    `🔄 <b>Swapped</b> ${esc(inputSymbol)} → ${esc(outputSymbol)}\n` +
     `In: ${amountIn ?? "?"} | Out: ${amountOut ?? "?"}\n` +
     `Tx: <code>${tx?.slice(0, 16)}...</code>`
   );
@@ -404,7 +409,7 @@ export async function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOu
 export async function notifyOutOfRange({ pair, minutesOOR }) {
   if (hasActiveLiveMessage()) return;
   await sendHTML(
-    `⚠️ <b>Out of Range</b> ${pair}\n` +
+    `⚠️ <b>Out of Range</b> ${esc(pair)}\n` +
     `Been OOR for ${minutesOOR} minutes`
   );
 }

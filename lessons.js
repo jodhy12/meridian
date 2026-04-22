@@ -168,6 +168,43 @@ export async function recordPerformance(perf) {
 }
 
 /**
+ * Backfill signal_snapshot for old performance records that have
+ * numeric fields (volatility, organic_score, etc.) but no snapshot.
+ * This allows Darwinian learning to use historical data immediately.
+ *
+ * Returns count of records updated.
+ */
+export function backfillSignalSnapshots() {
+  const data = load();
+  let updated = 0;
+
+  for (const perf of data.performance) {
+    if (perf.signal_snapshot) continue; // already has snapshot
+
+    // Build snapshot from existing performance fields
+    const snap = {};
+    if (perf.organic_score != null) snap.organic_score = perf.organic_score;
+    if (perf.fee_tvl_ratio != null) snap.fee_tvl_ratio = perf.fee_tvl_ratio;
+    if (perf.volatility != null)    snap.volatility = perf.volatility;
+    if (perf.bin_step != null)      snap.bin_step = perf.bin_step;
+    if (perf.bin_range?.bins_below != null) snap.bins_below = perf.bin_range.bins_below;
+
+    // Only save if we have at least 2 meaningful signals
+    if (Object.keys(snap).length >= 2) {
+      perf.signal_snapshot = snap;
+      updated++;
+    }
+  }
+
+  if (updated > 0) {
+    save(data);
+    log("lessons", `Backfilled signal_snapshot for ${updated} performance records`);
+  }
+
+  return updated;
+}
+
+/**
  * Derive a lesson from a closed position's performance.
  * Only generates a lesson if the outcome was clearly good or bad.
  */
@@ -316,6 +353,74 @@ export function evolveThresholds(perfData, config) {
     }
   }
 
+  // ── 4. maxVolatility ──────────────────────────────────────────
+  // Lower max volatility ceiling if high-vol pools consistently lose.
+  // Data: losers avg vol 4.37 vs winners avg 2.00
+  {
+    const loserVols  = losers.map((p) => p.volatility).filter(isFiniteNum);
+    const winnerVols = winners.map((p) => p.volatility).filter(isFiniteNum);
+    const current    = config.screening.maxVolatility;
+
+    if (loserVols.length >= 2 && winnerVols.length >= 1 && current != null) {
+      const avgLoserVol  = avg(loserVols);
+      const avgWinnerVol = avg(winnerVols);
+      // Only tighten if losers are clearly more volatile
+      if (avgLoserVol - avgWinnerVol >= 1.0) {
+        const maxWinnerVol = Math.max(...winnerVols);
+        const target = Math.max(maxWinnerVol + 0.5, 3); // keep at least 3
+        const newVal = Number(clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 3, 10).toFixed(1));
+        if (newVal < current) {
+          changes.maxVolatility = newVal;
+          rationale.maxVolatility = `Loser avg vol ${avgLoserVol.toFixed(1)} vs winner ${avgWinnerVol.toFixed(1)} — lowered from ${current} → ${newVal}`;
+        }
+      }
+    }
+  }
+
+  // ── 5. minHolders ────────────────────────────────────────────
+  // Raise holder floor if low-holder tokens fail more often.
+  {
+    const loserHolders  = losers.map((p) => p.signal_snapshot?.holder_count).filter(isFiniteNum);
+    const winnerHolders = winners.map((p) => p.signal_snapshot?.holder_count).filter(isFiniteNum);
+    const current       = config.screening.minHolders;
+
+    if (loserHolders.length >= 2 && winnerHolders.length >= 1) {
+      const avgLoserH  = avg(loserHolders);
+      const avgWinnerH = avg(winnerHolders);
+      if (avgWinnerH - avgLoserH >= 200) {
+        const minWinnerH = Math.min(...winnerHolders);
+        const target = Math.max(minWinnerH - 100, current);
+        const newVal = clamp(Math.round(nudge(current, target, MAX_CHANGE_PER_STEP)), 200, 5000);
+        if (newVal > current) {
+          changes.minHolders = newVal;
+          rationale.minHolders = `Winner avg holders ${avgWinnerH.toFixed(0)} vs loser ${avgLoserH.toFixed(0)} — raised from ${current} → ${newVal}`;
+        }
+      }
+    }
+  }
+
+  // ── 6. minMcap ───────────────────────────────────────────────
+  // Raise mcap floor if low-mcap tokens consistently fail.
+  {
+    const loserMcaps  = losers.map((p) => p.signal_snapshot?.mcap).filter(isFiniteNum);
+    const winnerMcaps = winners.map((p) => p.signal_snapshot?.mcap).filter(isFiniteNum);
+    const current     = config.screening.minMcap;
+
+    if (loserMcaps.length >= 2 && winnerMcaps.length >= 1) {
+      const avgLoserMcap  = avg(loserMcaps);
+      const avgWinnerMcap = avg(winnerMcaps);
+      if (avgWinnerMcap > avgLoserMcap * 1.5) {
+        const minWinnerMcap = Math.min(...winnerMcaps);
+        const target = Math.max(minWinnerMcap * 0.8, current);
+        const newVal = clamp(Math.round(nudge(current, target, MAX_CHANGE_PER_STEP)), 50_000, 5_000_000);
+        if (newVal > current) {
+          changes.minMcap = newVal;
+          rationale.minMcap = `Winner avg mcap ${avgWinnerMcap.toFixed(0)} vs loser ${avgLoserMcap.toFixed(0)} — raised from ${current} → ${newVal}`;
+        }
+      }
+    }
+  }
+
   if (Object.keys(changes).length === 0) return { changes: {}, rationale: {} };
 
   // ── Persist changes to user-config.json ───────────────────────
@@ -334,6 +439,9 @@ export function evolveThresholds(perfData, config) {
   const s = config.screening;
   if (changes.minFeeActiveTvlRatio != null) s.minFeeActiveTvlRatio = changes.minFeeActiveTvlRatio;
   if (changes.minOrganic           != null) s.minOrganic           = changes.minOrganic;
+  if (changes.maxVolatility        != null) s.maxVolatility        = changes.maxVolatility;
+  if (changes.minHolders           != null) s.minHolders           = changes.minHolders;
+  if (changes.minMcap              != null) s.minMcap              = changes.minMcap;
 
   // Log a lesson summarizing the evolution
   const data = load();

@@ -8,7 +8,7 @@ import { getTechnicalSignals } from "./tools/ohlcv.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
-import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
+import { evolveThresholds, getPerformanceSummary, backfillSignalSnapshots } from "./lessons.js";
 import { registerCronRestarter, executeTool } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled, createLiveMessage } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
@@ -26,6 +26,13 @@ log("startup", `Model: ${process.env.LLM_MODEL || "hermes-3-405b"}`);
 const reconcileResult = reconcileFromLessons();
 if (reconcileResult.added > 0) {
   log("startup", `Reconciled ${reconcileResult.added} positions from lessons.json into state.json`);
+}
+
+// Backfill signal_snapshot for old performance records so Darwinian learning
+// can use historical data immediately (volatility, organic_score, etc.)
+const backfilled = backfillSignalSnapshots();
+if (backfilled > 0) {
+  log("startup", `Backfilled signal_snapshot for ${backfilled} historical positions`);
 }
 
 const TP_PCT = config.management.takeProfitFeePct;
