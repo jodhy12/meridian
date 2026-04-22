@@ -21,6 +21,7 @@ import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { getTechnicalSignals } from "./ohlcv.js";
+import { getCachedPoolSignals } from "../screening-cache.js";
 import { config, reloadScreeningThresholds } from "../config.js";
 import fs from "fs";
 import path from "path";
@@ -297,18 +298,42 @@ export async function executeTool(name, args) {
   }
 
   // ─── Pre-execute enrichment ────────────────
-  if (name === "deploy_position" && args.pool_address && !args.signal_snapshot) {
-    try {
-      const tech = await getTechnicalSignals({ pool_address: args.pool_address, timeframe: "15m" });
-      if (tech && !tech.error) {
-        args.signal_snapshot = {
-          rsi2: tech.indicators?.rsi2 ?? null,
-          supertrend: tech.indicators?.supertrend?.direction ?? null,
-          vwap_dist_pct: tech.indicators?.vwap?.distance_pct ?? null,
-          volume_spike: tech.indicators?.volume_spike?.is_spike ?? false,
-        };
-      }
-    } catch { /* best effort */ }
+  // Build signal_snapshot from screening cache (primary) + LLM args (fallback) + fresh tech fetch
+  if (name === "deploy_position" && args.pool_address) {
+    // 1. Start from screening cache (has all signals, no LLM dependency)
+    const cached = getCachedPoolSignals(args.pool_address) || {};
+    const snap = { ...cached };
+
+    // 2. Fill gaps from LLM args (fallback for manual deploys or cache miss)
+    const fallbacks = {
+      organic_score: args.organic_score, fee_tvl_ratio: args.fee_tvl_ratio,
+      volatility: args.volatility, bin_step: args.bin_step, bins_below: args.bins_below,
+      volume: args.volume, mcap: args.mcap, tvl: args.tvl, holder_count: args.holder_count,
+      token_age_hours: args.token_age_hours, price_vs_ath_pct: args.price_vs_ath_pct,
+      top10_holders_pct: args.top10_holders_pct, bot_holders_pct: args.bot_holders_pct,
+      bundle_pct: args.bundle_pct,
+    };
+    for (const [k, v] of Object.entries(fallbacks)) {
+      if (snap[k] == null && v != null) snap[k] = Number(v);
+    }
+    if (snap.smart_wallets_present == null && args.smart_wallets_present != null) {
+      snap.smart_wallets_present = Boolean(args.smart_wallets_present);
+    }
+
+    // 3. Fetch fresh technical signals if not in cache
+    if (snap.rsi2 == null) {
+      try {
+        const tech = await getTechnicalSignals({ pool_address: args.pool_address, timeframe: "15m" });
+        if (tech && !tech.error) {
+          snap.rsi2 = tech.indicators?.rsi2 ?? null;
+          snap.supertrend_bullish = tech.indicators?.supertrend?.is_bullish ?? null;
+          snap.vwap_dist_pct = tech.indicators?.vwap?.distance_pct ?? null;
+          snap.volume_spike = tech.indicators?.volume_spike?.is_spike ?? false;
+        }
+      } catch { /* best effort */ }
+    }
+
+    args.signal_snapshot = snap;
   }
 
   // ─── Execute ──────────────────────────────

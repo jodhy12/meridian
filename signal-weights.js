@@ -17,16 +17,33 @@ const WEIGHTS_FILE = "./signal-weights.json";
 // ─── Signal Definitions ─────────────────────────────────────────
 
 const SIGNAL_NAMES = [
+  // Pool metrics (from screening API)
   "organic_score",
   "fee_tvl_ratio",
   "volume",
   "mcap",
   "holder_count",
+  "volatility",
+  "tvl",
+  "bin_step",
+  "bins_below",
+  // Token safety (from token info + OKX)
+  "top10_holders_pct",
+  "bot_holders_pct",
+  "bundle_pct",
+  "token_age_hours",
+  "price_vs_ath_pct",
+  // Technical (from OHLCV at deploy)
+  "rsi2",
+  "vwap_dist_pct",
+  // Boolean / categorical
   "smart_wallets_present",
+  "volume_spike",
+  "supertrend_bullish",
   "narrative_quality",
+  // External
   "study_win_rate",
   "hive_consensus",
-  "volatility",
 ];
 
 const DEFAULT_WEIGHTS = Object.fromEntries(SIGNAL_NAMES.map((s) => [s, 1.0]));
@@ -37,12 +54,28 @@ const HIGHER_IS_BETTER = new Set([
   "fee_tvl_ratio",
   "volume",
   "holder_count",
+  "token_age_hours",
+  "tvl",
   "study_win_rate",
   "hive_consensus",
 ]);
 
+// Signals where lower values generally indicate better candidates
+// (used for lift direction — high volatility, high bundle% = worse)
+const LOWER_IS_BETTER = new Set([
+  "volatility",
+  "top10_holders_pct",
+  "bot_holders_pct",
+  "bundle_pct",
+  "vwap_dist_pct",
+]);
+
 // Boolean signals — compared by win rate when present vs absent
-const BOOLEAN_SIGNALS = new Set(["smart_wallets_present"]);
+const BOOLEAN_SIGNALS = new Set([
+  "smart_wallets_present",
+  "volume_spike",
+  "supertrend_bullish",
+]);
 
 // Categorical signals — compared by win rate across categories
 const CATEGORICAL_SIGNALS = new Set(["narrative_quality"]);
@@ -222,7 +255,9 @@ function computeNumericLift(signal, wins, losses, minSamples) {
   const winMean  = mean(winVals.map(normalize));
   const lossMean = mean(lossVals.map(normalize));
 
-  return HIGHER_IS_BETTER.has(signal) ? winMean - lossMean : Math.abs(winMean - lossMean);
+  if (HIGHER_IS_BETTER.has(signal)) return winMean - lossMean;
+  if (LOWER_IS_BETTER.has(signal))  return lossMean - winMean; // flip: lower in winners = positive lift
+  return Math.abs(winMean - lossMean);
 }
 
 function computeBooleanLift(signal, wins, losses, minSamples) {

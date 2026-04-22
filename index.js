@@ -9,12 +9,13 @@ import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
 import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
-import { registerCronRestarter } from "./tools/executor.js";
+import { registerCronRestarter, executeTool } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled, createLiveMessage } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, setLastTpCheckPct, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop, reconcileFromLessons } from "./state.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { getTokenInfo } from "./tools/token.js";
+import { cachePoolSignals } from "./screening-cache.js";
 
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
@@ -483,48 +484,49 @@ export async function runManagementCycle({ silent = false } = {}) {
     mgmtReport = reportLines.join("\n\n") +
       `\n\nSummary: 💼 ${positions.length} positions | ${cur}${totalValue.toFixed(4)} | fees: ${cur}${totalUnclaimed.toFixed(4)} | ${actionSummary}`;
 
-    // ── Call LLM only if action needed ──────────────────────────────
+    // ── Execute actions directly (no LLM — rules already decided) ──
     const actionPositions = positionData.filter(p => {
       const a = actionMap.get(p.position);
       return a.action !== "STAY";
     });
 
     if (actionPositions.length > 0) {
-      log("cron", `Management: ${actionPositions.length} action(s) needed — invoking LLM [model: ${config.llm.managementModel}]`);
+      log("cron", `Management: ${actionPositions.length} action(s) — executing directly (no LLM)`);
+      const actionResults = [];
 
-      const actionBlocks = actionPositions.map((p) => {
+      for (const p of actionPositions) {
         const act = actionMap.get(p.position);
-        return [
-          `POSITION: ${p.pair} (${p.position})`,
-          `  pool: ${p.pool}`,
-          `  action: ${act.action}${act.rule && act.rule !== "exit" ? ` — Rule ${act.rule}: ${act.reason}` : ""}${act.rule === "exit" ? ` — ⚡ Trailing TP: ${act.reason}` : ""}`,
-          `  pnl_pct: ${p.pnl_pct}% | unclaimed_fees: ${cur}${p.unclaimed_fees_usd} | value: ${cur}${p.total_value_usd} | fee_per_tvl_24h: ${p.fee_per_tvl_24h ?? "?"}%`,
-          `  bins: lower=${p.lower_bin} upper=${p.upper_bin} active=${p.active_bin} | oor_minutes: ${p.minutes_out_of_range ?? 0}`,
-          p.instruction ? `  instruction: "${p.instruction}"` : null,
-        ].filter(Boolean).join("\n");
-      }).join("\n\n");
+        try {
+          if (act.action === "CLOSE" || act.action === "TRAILING_TP" || act.action === "STOP_LOSS" || act.action === "EARLY_IL") {
+            const reason = act.reason || act.action;
+            await liveMessage?.toolStart("close_position");
+            const result = await executeTool("close_position", {
+              position_address: p.position,
+              reason,
+            });
+            await liveMessage?.toolFinish("close_position", result, result?.success !== false);
+            const status = result?.success !== false ? "✅" : `❌ ${result?.error || "failed"}`;
+            actionResults.push(`${p.pair}: CLOSE ${status} — ${reason}`);
+            log("cron", `[Mgmt] Closed ${p.pair}: ${status}`);
+          } else if (act.action === "CLAIM") {
+            await liveMessage?.toolStart("claim_fees");
+            const result = await executeTool("claim_fees", {
+              position_address: p.position,
+            });
+            await liveMessage?.toolFinish("claim_fees", result, result?.success !== false);
+            const status = result?.success !== false ? "✅" : `❌ ${result?.error || "failed"}`;
+            actionResults.push(`${p.pair}: CLAIM ${status}`);
+            log("cron", `[Mgmt] Claimed ${p.pair}: ${status}`);
+          }
+        } catch (e) {
+          actionResults.push(`${p.pair}: ${act.action} ❌ ${e.message}`);
+          log("cron_error", `[Mgmt] ${act.action} ${p.pair} failed: ${e.message}`);
+        }
+      }
 
-      const { content } = await agentLoop(`
-MANAGEMENT ACTION REQUIRED — ${actionPositions.length} position(s)
-
-${actionBlocks}
-
-RULES:
-- CLOSE: call close_position only — it handles fee claiming internally, do NOT call claim_fees first
-- CLAIM: call claim_fees with position address
-- INSTRUCTION: evaluate the instruction condition. If met → close_position. If not → HOLD, do nothing.
-- ⚡ exit alerts: close immediately, no exceptions
-
-Execute the required actions. Do NOT re-evaluate CLOSE/CLAIM — rules already applied. Just execute.
-After executing, write a brief one-line result per position.
-      `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 2048, {
-        onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
-        onToolFinish: async ({ name, result, success }) => { await liveMessage?.toolFinish(name, result, success); },
-      });
-
-      mgmtReport += `\n\n${content}`;
+      mgmtReport += `\n\n${actionResults.join("\n")}`;
     } else {
-      log("cron", "Management: all positions STAY — skipping LLM");
+      log("cron", "Management: all positions STAY — no actions needed");
       await liveMessage?.note("No tool actions needed.");
     }
 
@@ -691,6 +693,30 @@ export async function runScreeningCycle({ silent = false } = {}) {
         continue;
       }
 
+      // Cache all signals for this pool so executor can inject signal_snapshot at deploy
+      cachePoolSignals(pool.pool, {
+        organic_score: pool.organic_score ?? null,
+        fee_tvl_ratio: pool.fee_active_tvl_ratio ?? null,
+        volatility: Number(pool.volatility || 0),
+        volume: pool.volume_window ?? null,
+        mcap: pool.mcap ?? null,
+        tvl: pool.active_tvl ?? null,
+        bin_step: pool.bin_step ?? null,
+        bins_below: pool._bins_below ?? null,
+        token_age_hours: pool.token_age_hours ?? null,
+        price_vs_ath_pct: pool.price_vs_ath_pct ?? null,
+        holder_count: ti?.holder_count ?? null,
+        top10_holders_pct: ti?.audit?.top_holders_pct != null ? Number(ti.audit.top_holders_pct) : null,
+        bot_holders_pct: ti?.audit?.bot_holders_pct != null ? Number(ti.audit.bot_holders_pct) : null,
+        bundle_pct: pool.bundle_pct ?? ti?.bundle_pct ?? null,
+        smart_wallets_present: pool.smart_wallets_present ?? null,
+        // Technical (already fetched above)
+        rsi2: pool._tech_snapshot?.rsi2 ?? null,
+        supertrend_bullish: pool._tech_snapshot?.supertrend === "up" || (tech?.indicators?.supertrend?.is_bullish ?? null),
+        vwap_dist_pct: pool._tech_snapshot?.vwap_dist_pct ?? null,
+        volume_spike: pool._tech_snapshot?.volume_spike ?? false,
+      });
+
       enriched.push({ pool, ti });
       await new Promise(r => setTimeout(r, 500)); // GeckoTerminal rate limit
     }
@@ -732,12 +758,17 @@ export async function runScreeningCycle({ silent = false } = {}) {
         .map(([k, v]) => `${k}: ${v}`)
         .join("\n    ");
 
+      // Collect holder count from token info
+      const holderCount = ti?.holder_count ?? null;
+      const smartWallets = pool.smart_wallets_present ?? null;
+      const bundlePct = pool.bundle_pct ?? ti?.bundle_pct ?? null;
+
       return [
         `━━━ ${pool.name} ━━━`,
         `  Score:    ${pool.score} [${pool.score_label}]`,
         `  Breakdown:\n    ${scoreBreakdown}`,
         `  Metrics:  fee_tvl=${pool.fee_active_tvl_ratio}% | vol=$${pool.volume_window} | tvl=$${pool.active_tvl} | volatility=${vol} | organic=${pool.organic_score} | mcap=$${pool.mcap}${pool.token_age_hours != null ? ` | age=${pool.token_age_hours}h` : ""}`,
-        `  Audit:    top10=${top10}% | bots=${bots}% | fees_sol=${feesSol}${launchpad ? ` | launchpad=${launchpad}` : ""}`,
+        `  Audit:    top10=${top10}% | bots=${bots}%${bundlePct != null ? ` | bundle=${bundlePct}%` : ""} | fees_sol=${feesSol}${holderCount != null ? ` | holders=${holderCount}` : ""}${launchpad ? ` | launchpad=${launchpad}` : ""}`,
         `  OKX:      ${okxRisk}`,
         okxTags ? `  Tags:     ${okxTags}` : null,
         pool.price_vs_ath_pct != null ? `  ATH:      price_vs_ath=${pool.price_vs_ath_pct}%` : null,
