@@ -321,7 +321,7 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     const { score, breakdown } = scoreCandidate(pool, smartWalletsPresent);
     pool.score = score;
     pool.score_breakdown = breakdown;
-    pool.score_label = score >= 60 ? "DEPLOY" : score >= 40 ? "CAUTION" : "SKIP";
+    pool.score_label = score >= 60 ? "DEPLOY" : score >= 50 ? "CAUTION" : "SKIP";
   }
 
   eligible.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
