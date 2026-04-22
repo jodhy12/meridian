@@ -12,13 +12,20 @@ import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled, createLiveMessage } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, setLastTpCheckPct, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop } from "./state.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, setLastTpCheckPct, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop, reconcileFromLessons } from "./state.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { getTokenInfo } from "./tools/token.js";
 
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
 log("startup", `Model: ${process.env.LLM_MODEL || "hermes-3-405b"}`);
+
+// Backfill state.json from lessons.json for any positions that were closed
+// but not tracked (e.g. state.json was overwritten or positions predated tracking)
+const reconcileResult = reconcileFromLessons();
+if (reconcileResult.added > 0) {
+  log("startup", `Reconciled ${reconcileResult.added} positions from lessons.json into state.json`);
+}
 
 const TP_PCT = config.management.takeProfitFeePct;
 const DEPLOY = config.management.deployAmountSol;
@@ -405,6 +412,14 @@ export async function runManagementCycle({ silent = false } = {}) {
         actionMap.set(p.position, { action: "CLOSE", rule: 8, reason: `max hold negative: ${p.age_minutes}m > ${maxHoldNeg}m with pnl ${p.pnl_pct.toFixed(2)}%` });
         continue;
       }
+      // Rule 9: max hold flat — data: ADHD 406m peak 0.25%, 我的刀盾 964m peak 0.63%, Aliens 234m peak 0.02%
+      const maxHoldFlat = config.management.maxHoldFlatMinutes;
+      if (maxHoldFlat != null &&
+          (p.age_minutes ?? 0) >= maxHoldFlat &&
+          (tracked?.peak_pnl_pct ?? 0) < 1) {
+        actionMap.set(p.position, { action: "CLOSE", rule: 9, reason: `stale flat: ${p.age_minutes}m > ${maxHoldFlat}m with peak ${(tracked?.peak_pnl_pct ?? 0).toFixed(2)}%` });
+        continue;
+      }
       // Claim rule
       if ((p.unclaimed_fees_usd ?? 0) >= config.management.minClaimAmount) {
         actionMap.set(p.position, { action: "CLAIM" });
@@ -632,7 +647,15 @@ export async function runScreeningCycle({ silent = false } = {}) {
         continue;
       }
 
-      // 2d. Technical signals (entry ok? bearish? volume spike?)
+      // 2d. Hard filter — dead pool trap (high fee_tvl but low organic = stale/fake activity)
+      // Data: AgenC-SOL fee_tvl=3.51, organic=55 → 0 fees in 15 min (dead pool)
+      const organicScore = pool.organic_score ?? 100;
+      if ((pool.fee_active_tvl_ratio ?? 0) >= 3 && organicScore < 65) {
+        log("screening", `Filtered ${pool.name} — dead pool suspect: fee_tvl=${pool.fee_active_tvl_ratio} but organic=${organicScore} < 65`);
+        continue;
+      }
+
+      // 2e. Technical signals (entry ok? bearish? volume spike?)
       let tech = null;
       try {
         const raw = await getTechnicalSignals({ pool_address: pool.pool, timeframe: "15m" });

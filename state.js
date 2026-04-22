@@ -583,3 +583,85 @@ export function syncOpenPositions(active_addresses) {
 
   if (changed) save(state);
 }
+
+/**
+ * Backfill state.json from lessons.json for closed positions that have
+ * performance records but no state entry. This ensures historical completeness
+ * even if state.json was overwritten or positions were deployed before state tracking.
+ *
+ * Returns { added, skipped } counts.
+ */
+export function reconcileFromLessons() {
+  const LESSONS_FILE = "./lessons.json";
+  if (!fs.existsSync(LESSONS_FILE)) return { added: 0, skipped: 0 };
+
+  let lessons;
+  try {
+    lessons = JSON.parse(fs.readFileSync(LESSONS_FILE, "utf8"));
+  } catch {
+    return { added: 0, skipped: 0 };
+  }
+
+  const performances = lessons.performance || [];
+  if (performances.length === 0) return { added: 0, skipped: 0 };
+
+  const state = load();
+  let added = 0;
+  let skipped = 0;
+
+  for (const perf of performances) {
+    const posId = perf.position;
+    if (!posId || state.positions[posId]) {
+      skipped++;
+      continue;
+    }
+
+    // Reconstruct a closed state entry from performance data
+    state.positions[posId] = {
+      position: posId,
+      pool: perf.pool || null,
+      pool_name: perf.pool_name || null,
+      strategy: perf.strategy || null,
+      bin_range: perf.bin_range || {},
+      amount_sol: perf.amount_sol || 0,
+      amount_x: 0,
+      active_bin_at_deploy: null,
+      bin_step: perf.bin_step || null,
+      volatility: perf.volatility || null,
+      fee_tvl_ratio: perf.fee_tvl_ratio || null,
+      initial_fee_tvl_24h: perf.fee_tvl_ratio || null,
+      organic_score: perf.organic_score || null,
+      initial_value_usd: perf.initial_value_usd || null,
+      signal_snapshot: null,
+      deployed_at: perf.deployed_at || perf.closed_at || null,
+      out_of_range_since: null,
+      last_claim_at: null,
+      total_fees_claimed_usd: perf.fees_earned_usd || 0,
+      rebalance_count: 0,
+      closed: true,
+      closed_at: perf.closed_at || null,
+      notes: [`Backfilled from lessons.json: ${perf.close_reason || "unknown reason"}`],
+      peak_pnl_pct: 0,
+      pending_peak_pnl_pct: null,
+      pending_peak_started_at: null,
+      pending_trailing_current_pnl_pct: null,
+      pending_trailing_peak_pnl_pct: null,
+      pending_trailing_drop_pct: null,
+      pending_trailing_started_at: null,
+      confirmed_trailing_exit_reason: null,
+      confirmed_trailing_exit_until: null,
+      trailing_active: false,
+      trailing_activated_at: null,
+      last_tp_check_pct: 0,
+    };
+    added++;
+    log("state", `Backfilled position ${posId} (${perf.pool_name}) from lessons.json`);
+  }
+
+  if (added > 0) {
+    save(state);
+    log("state", `Reconciliation complete: ${added} positions backfilled, ${skipped} already tracked`);
+  }
+
+  return { added, skipped };
+}
