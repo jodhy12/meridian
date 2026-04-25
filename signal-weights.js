@@ -33,6 +33,9 @@ const SIGNAL_NAMES = [
   "bundle_pct",
   "token_age_hours",
   "price_vs_ath_pct",
+  // Activity (from Meteora API — dead pool predictor)
+  "swap_count",
+  "unique_traders",
   // Technical (from OHLCV at deploy)
   "rsi2",
   "vwap_dist_pct",
@@ -56,6 +59,8 @@ const HIGHER_IS_BETTER = new Set([
   "holder_count",
   "token_age_hours",
   "tvl",
+  "swap_count",
+  "unique_traders",
   "study_win_rate",
   "hive_consensus",
 ]);

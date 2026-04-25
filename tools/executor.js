@@ -157,6 +157,8 @@ const toolMap = {
       blockPvpSymbols: ["screening", "blockPvpSymbols"],
       allowedLaunchpads: ["screening", "allowedLaunchpads"],
       blockedLaunchpads: ["screening", "blockedLaunchpads"],
+      minSwapCount: ["screening", "minSwapCount"],
+      minUniqueTraders: ["screening", "minUniqueTraders"],
       minFeePerTvl24h: ["management", "minFeePerTvl24h"],
       // management
       minClaimAmount: ["management", "minClaimAmount"],

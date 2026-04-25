@@ -53,6 +53,8 @@ export const config = {
     athFilterPct:       u.athFilterPct       ?? null, // e.g. -20 = only deploy if price is >= 20% below ATH
     minVolatility:      u.minVolatility      ?? null,  // hard-skip pools with volatility below this (data: vol<2 avg -0.37% PnL)
     maxVolatility:      u.maxVolatility      ?? 5,    // hard-skip pools with volatility above this (data: vol>5 avg -4% PnL)
+    minSwapCount:       u.minSwapCount       ?? 5,    // hard-skip pools with fewer swaps in timeframe (dead pool pre-filter)
+    minUniqueTraders:   u.minUniqueTraders   ?? 3,    // hard-skip pools with fewer unique traders (bot-only activity)
     solOnlyPairs:       u.solOnlyPairs       ?? true, // only consider pools with SOL as quote token
     // Quality post-filter (applied after API, before LLM sees candidates)
     qualityMinOrganic:  u.qualityMinOrganic  ?? 70,
@@ -200,5 +202,7 @@ export function reloadScreeningThresholds() {
     if (fresh.solOnlyPairs      !== undefined) s.solOnlyPairs      = fresh.solOnlyPairs;
     if (fresh.minVolatility     != null) s.minVolatility     = fresh.minVolatility;
     if (fresh.maxVolatility     != null) s.maxVolatility     = fresh.maxVolatility;
+    if (fresh.minSwapCount     != null) s.minSwapCount     = fresh.minSwapCount;
+    if (fresh.minUniqueTraders != null) s.minUniqueTraders = fresh.minUniqueTraders;
   } catch { /* ignore */ }
 }
