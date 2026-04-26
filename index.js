@@ -1,5 +1,4 @@
-import { loadEnv } from "./envcrypt.js";
-loadEnv(); // load .env, decrypt encrypted keys if .envrypt exists
+import "./env-boot.js"; // MUST be first — loads .env before any module reads process.env
 import cron from "node-cron";
 import readline from "readline";
 import { agentLoop } from "./agent.js";
