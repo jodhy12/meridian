@@ -4,6 +4,16 @@ import {
   PublicKey,
   sendAndConfirmTransaction,
 } from "@solana/web3.js";
+
+// Wrap sendAndConfirmTransaction with a hard timeout to prevent infinite hangs
+async function sendWithTimeout(connection, tx, signers, timeoutMs = 45_000) {
+  return Promise.race([
+    sendAndConfirmTransaction(connection, tx, signers),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Transaction timeout after ${timeoutMs / 1000}s`)), timeoutMs)
+    ),
+  ]);
+}
 import BN from "bn.js";
 import bs58 from "bs58";
 import { config } from "../config.js";
@@ -46,7 +56,11 @@ let _wallet = null;
 
 function getConnection() {
   if (!_connection) {
-    _connection = new Connection(process.env.RPC_URL, "confirmed");
+    _connection = new Connection(process.env.RPC_URL, {
+      commitment: "confirmed",
+      confirmTransactionInitialTimeout: 30_000, // 30s max wait for confirmation
+      wsEndpoint: undefined, // disable websocket — use polling only
+    });
   }
   return _connection;
 }
@@ -206,7 +220,7 @@ export async function deployPosition({
       const createTxArray = Array.isArray(createTxs) ? createTxs : [createTxs];
       for (let i = 0; i < createTxArray.length; i++) {
         const signers = i === 0 ? [wallet, newPosition] : [wallet];
-        const txHash = await sendAndConfirmTransaction(getConnection(), createTxArray[i], signers);
+        const txHash = await sendWithTimeout(getConnection(), createTxArray[i], signers);
         txHashes.push(txHash);
         log("deploy", `Create tx ${i + 1}/${createTxArray.length}: ${txHash}`);
       }
@@ -222,7 +236,7 @@ export async function deployPosition({
       });
       const addTxArray = Array.isArray(addTxs) ? addTxs : [addTxs];
       for (let i = 0; i < addTxArray.length; i++) {
-        const txHash = await sendAndConfirmTransaction(getConnection(), addTxArray[i], [wallet]);
+        const txHash = await sendWithTimeout(getConnection(), addTxArray[i], [wallet]);
         txHashes.push(txHash);
         log("deploy", `Add liquidity tx ${i + 1}/${addTxArray.length}: ${txHash}`);
       }
@@ -236,7 +250,7 @@ export async function deployPosition({
         strategy: { maxBinId, minBinId, strategyType },
         slippage: 1000, // 10% in bps
       });
-      const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet, newPosition]);
+      const txHash = await sendWithTimeout(getConnection(), tx, [wallet, newPosition]);
       txHashes.push(txHash);
     }
 
@@ -707,7 +721,7 @@ export async function claimFees({ position_address }) {
 
     const txHashes = [];
     for (const tx of txs) {
-      const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet]);
+      const txHash = await sendWithTimeout(getConnection(), tx, [wallet]);
       txHashes.push(txHash);
     }
     log("claim", `SUCCESS txs: ${txHashes.join(", ")}`);
@@ -756,7 +770,7 @@ export async function closePosition({ position_address, reason }) {
         });
         if (claimTxs && claimTxs.length > 0) {
           for (const tx of claimTxs) {
-            const claimHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet]);
+            const claimHash = await sendWithTimeout(getConnection(), tx, [wallet]);
             claimTxHashes.push(claimHash);
           }
           log("close", `Step 1 OK (claim only): ${claimTxHashes.join(", ")}`);
@@ -795,7 +809,7 @@ export async function closePosition({ position_address, reason }) {
       });
 
       for (const tx of Array.isArray(closeTx) ? closeTx : [closeTx]) {
-        const txHash = await sendAndConfirmTransaction(getConnection(), tx, [wallet]);
+        const txHash = await sendWithTimeout(getConnection(), tx, [wallet]);
         closeTxHashes.push(txHash);
       }
     } else {
@@ -804,7 +818,7 @@ export async function closePosition({ position_address, reason }) {
         owner: wallet.publicKey,
         position: { publicKey: positionPubKey },
       });
-      const txHash = await sendAndConfirmTransaction(getConnection(), closeTx, [wallet]);
+      const txHash = await sendWithTimeout(getConnection(), closeTx, [wallet]);
       closeTxHashes.push(txHash);
     }
     const txHashes = [...claimTxHashes, ...closeTxHashes];
