@@ -180,15 +180,16 @@ function mdToTelegramHTML(text) {
 }
 
 /** Format screening report for Telegram (compact HTML) */
-function formatScreenTelegram(rawReport) {
+function formatScreenTelegram(rawReport, deployedOverride = null) {
   if (!rawReport) return null;
   const D = "━━━━━━━━━━━━━━━━━━━━";
   const text = stripThink(rawReport);
 
-  // Try to extract deploy outcome from report
-  const deployed = /deployed|position opened|✅/i.test(text);
-  const blocked  = /blocked|cooldown|no deploy|skip/i.test(text);
-  const noPass   = /no candidates|0 candidates|all.*filtered/i.test(text);
+  // Use explicit deploy flag if provided (avoids LLM report misclassification)
+  // Fall back to regex only when override is not set
+  const deployed = deployedOverride !== null ? deployedOverride : /deployed|position opened|🚀/i.test(text);
+  const blocked  = !deployed && /blocked|cooldown|no deploy|skip/i.test(text);
+  const noPass   = !deployed && /no candidates|0 candidates|all.*filtered/i.test(text);
 
   const icon = deployed ? "🚀" : blocked ? "⛔" : noPass ? "🔍" : "🔍";
   const title = deployed ? "Deployed" : blocked ? "Blocked" : noPass ? "No Candidates" : "Screening";
@@ -659,6 +660,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
   let liveMessage = null;
   let screenReport = null;
+  let deploySucceeded = false; // tracks whether deploy_position actually succeeded
 
   // ── Guard: pre-check positions + balance ────────────────────────────────────
   let positions, balance;
@@ -916,7 +918,10 @@ On no deploy:
 Skipped: <comma list>
 `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048, {
       onToolStart:  async ({ name })                 => { await liveMessage?.toolStart(name); },
-      onToolFinish: async ({ name, result, success }) => { await liveMessage?.toolFinish(name, result, success); },
+      onToolFinish: async ({ name, result, success }) => {
+        if (name === "deploy_position" && success && result?.success !== false) deploySucceeded = true;
+        await liveMessage?.toolFinish(name, result, success);
+      },
     });
 
     screenReport = content;
@@ -934,7 +939,7 @@ Skipped: <comma list>
     }).catch(() => {});
     if (!silent && telegramEnabled() && screenReport) {
       if (liveMessage) await liveMessage.finalize("").catch(() => {});
-      const screenFormatted = formatScreenTelegram(screenReport);
+      const screenFormatted = formatScreenTelegram(screenReport, deploySucceeded);
       if (screenFormatted) sendHTML(screenFormatted).catch((e) => log("telegram_warn", `Screening report send failed: ${e.message}`));
     }
   }
