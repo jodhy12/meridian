@@ -13,6 +13,7 @@ import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
 import { setPositionInstruction, getTrackedPositions } from "../state.js";
+import { computeDeployAmount } from "../config.js";
 
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
@@ -336,6 +337,29 @@ export async function executeTool(name, args) {
     }
 
     args.signal_snapshot = snap;
+
+    // 4. Auto-fill critical deploy params if LLM didn't provide them
+    //    This prevents failed deploys from unreliable models (minimax, etc.)
+    if (!args.amount_y && !args.amount_sol) {
+      const bal = await getWalletBalances().catch(() => null);
+      const walletSol = bal?.sol ?? 0;
+      args.amount_y = computeDeployAmount(walletSol);
+      log("executor", `Auto-filled amount_y=${args.amount_y} SOL (wallet: ${walletSol})`);
+    }
+    // Normalize: ensure amount_y is set (some LLMs send amount_sol instead)
+    if (!args.amount_y && args.amount_sol) {
+      args.amount_y = args.amount_sol;
+    }
+
+    if (!args.bins_below || args.bins_below <= 0) {
+      const vol = snap.volatility ?? args.volatility ?? 3;
+      args.bins_below = Math.round(Math.min(Math.max(30 + (vol / 5) * 30, 30), 60));
+      log("executor", `Auto-filled bins_below=${args.bins_below} (volatility: ${vol})`);
+    }
+    if (!args.bins_above || args.bins_above <= 0) {
+      args.bins_above = Math.max(12, Math.round(args.bins_below * 0.2));
+      log("executor", `Auto-filled bins_above=${args.bins_above}`);
+    }
   }
 
   // ─── Execute ──────────────────────────────
