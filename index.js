@@ -100,37 +100,67 @@ function formatMgmtTelegram(positionData, actionMap, mgmtReport, solMode) {
   const lines = positionData.map((p) => {
     const act = actionMap.get(p.position) || { action: "STAY" };
     const pnl = p.pnl_pct ?? 0;
+    const pnlUsd = p.pnl_usd ?? 0;
     const rangeEmoji = p.in_range ? "🟢" : "🔴";
     const pnlEmoji = pnl >= 3 ? "🚀" : pnl >= 0 ? "📈" : pnl > -3 ? "📉" : "🔻";
     const pnlSign = pnl >= 0 ? "+" : "";
 
     const actionLine = act.action === "CLOSE"
-      ? `❌ CLOSE — <i>${escHTML(act.reason?.substring(0, 60) ?? "")}</i>`
+      ? `❌ CLOSE — <i>${escHTML(act.reason?.substring(0, 80) ?? "")}</i>`
       : act.action === "CLAIM"
-      ? `💰 CLAIM`
+      ? `💰 CLAIM fees`
       : `✅ HOLD`;
 
-    const val   = (p.total_value_usd ?? 0).toFixed(3);
-    const fee   = (p.unclaimed_fees_usd ?? 0).toFixed(4);
-    const age   = p.age_minutes ?? 0;
-    const ageStr = age >= 60 ? `${Math.floor(age/60)}h${age%60}m` : `${age}m`;
+    const val    = (p.total_value_usd ?? 0).toFixed(3);
+    const fee    = (p.unclaimed_fees_usd ?? 0).toFixed(4);
+    const age    = p.age_minutes ?? 0;
+    const ageStr = age >= 60 ? `${Math.floor(age/60)}h${age%60 > 0 ? age%60+"m" : ""}` : `${age}m`;
+    const pnlUsdStr = Math.abs(pnlUsd) >= 0.0001 ? ` (${pnlSign}${cur}${Math.abs(pnlUsd).toFixed(4)})` : "";
 
-    return (
-      `${rangeEmoji} <b>${escHTML(p.pair)}</b>  ${pnlEmoji} <b>${pnlSign}${pnl.toFixed(2)}%</b>\n` +
-      `   ${cur}${val}  ·  fee ${cur}${fee}  ·  ${ageStr}\n` +
-      `   ${actionLine}`
-    );
+    // Yield rate
+    const yield24h = p.fee_per_tvl_24h ?? null;
+    const yieldStr = yield24h != null ? `yield ${yield24h.toFixed(2)}%` : null;
+
+    // OOR info
+    const oorMin = p.minutes_out_of_range ?? 0;
+    const waitMin = config.management.outOfRangeWaitMinutes;
+    const oorStr = !p.in_range && oorMin > 0 ? `⏱ OOR ${oorMin}m/${waitMin}m` : null;
+
+    // Strategy + bin step from tracked state
+    const tracked = getTrackedPosition(p.position);
+    const strat = tracked?.strategy ?? null;
+    const binStep = tracked?.bin_step ?? null;
+    const stratStr = [strat, binStep ? `${binStep}bs` : null].filter(Boolean).join(" · ");
+
+    // Instruction/note
+    const instrLine = p.instruction ? `   📝 <i>${escHTML(p.instruction.substring(0, 60))}</i>` : null;
+
+    // Build detail line 2: value · fees · age
+    const line2 = `   ${cur}${val}  ·  fees ${cur}${fee}  ·  ${ageStr}`;
+    // Build detail line 3: yield · OOR · strategy
+    const line3Parts = [yieldStr, oorStr, stratStr].filter(Boolean);
+    const line3 = line3Parts.length > 0 ? `   ${line3Parts.join("  ·  ")}` : null;
+
+    return [
+      `${rangeEmoji} <b>${escHTML(p.pair)}</b>  ${pnlEmoji} <b>${pnlSign}${pnl.toFixed(2)}%</b>${pnlUsdStr}`,
+      line2,
+      line3,
+      instrLine,
+      `   ${actionLine}`,
+    ].filter(Boolean).join("\n");
   });
 
   const totalVal = positionData.reduce((s, p) => s + (p.total_value_usd ?? 0), 0);
   const totalFee = positionData.reduce((s, p) => s + (p.unclaimed_fees_usd ?? 0), 0);
+  const totalPnl = positionData.reduce((s, p) => s + (p.pnl_usd ?? 0), 0);
+  const pnlSign  = totalPnl >= 0 ? "+" : "";
 
   return (
     `🔄 <b>Management</b>\n` +
     `${D}\n` +
     lines.join(`\n${D}\n`) +
     `\n${D}\n` +
-    `📊 ${positionData.length} pos  ·  ${cur}${totalVal.toFixed(3)}  ·  fees ${cur}${totalFee.toFixed(4)}`
+    `📊 ${positionData.length} pos  ·  ${cur}${totalVal.toFixed(3)}  ·  PnL ${pnlSign}${cur}${totalPnl.toFixed(4)}  ·  fees ${cur}${totalFee.toFixed(4)}`
   );
 }
 
