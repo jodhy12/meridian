@@ -549,10 +549,16 @@ export async function runManagementCycle({ silent = false } = {}) {
           if (act.action === "CLOSE" || act.action === "TRAILING_TP" || act.action === "STOP_LOSS" || act.action === "EARLY_IL") {
             const reason = act.reason || act.action;
             await liveMessage?.toolStart("close_position");
-            const result = await executeTool("close_position", {
+            let result = await executeTool("close_position", {
               position_address: p.position,
               reason,
             });
+            // Retry once on transient network errors
+            if (result?.success === false && /fetch failed|ECONNRESET|ECONNREFUSED|socket hang|ETIMEDOUT/i.test(result?.error || "")) {
+              log("cron", `[Mgmt] Close failed (network error), retrying in 4s: ${result.error}`);
+              await new Promise(r => setTimeout(r, 4000));
+              result = await executeTool("close_position", { position_address: p.position, reason });
+            }
             await liveMessage?.toolFinish("close_position", result, result?.success !== false);
             const status = result?.success !== false ? "✅" : `❌ ${result?.error || "failed"}`;
             actionResults.push(`${p.pair}: CLOSE ${status} — ${reason}`);
@@ -600,8 +606,8 @@ export async function runManagementCycle({ silent = false } = {}) {
         const formatted = positionData.length > 0
           ? formatMgmtTelegram(positionData, actionMap, mgmtReport, config.management.solMode)
           : `🔄 <b>Management</b>\n\n${mdToTelegramHTML(stripThink(mgmtReport).substring(0, 500))}`;
-        if (liveMessage) await liveMessage.finalize(stripThink(mgmtReport)).catch(() => {});
-        else sendHTML(formatted).catch(() => { });
+        if (liveMessage) await liveMessage.finalize("").catch(() => {});
+        sendHTML(formatted).catch(() => { });
       }
       for (const p of positions) {
         if (!p.in_range && p.minutes_out_of_range >= config.management.outOfRangeWaitMinutes) {
@@ -896,8 +902,8 @@ Skipped: <comma list>
       timers._lastKnownMaxVolatility = vols.length > 0 ? Math.max(...vols) : 0;
     }).catch(() => {});
     if (!silent && telegramEnabled() && screenReport) {
-      if (liveMessage) await liveMessage.finalize(stripThink(screenReport)).catch(() => {});
-      else sendHTML(formatScreenTelegram(screenReport)).catch(() => {});
+      if (liveMessage) await liveMessage.finalize("").catch(() => {});
+      sendHTML(formatScreenTelegram(screenReport)).catch(() => {});
     }
   }
 
