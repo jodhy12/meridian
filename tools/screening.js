@@ -46,11 +46,14 @@ export async function discoverPools({
   ].join("&&");
 
   // Loose filters — for "new" category (early pools, low volume ok)
+  // Use a fixed low floor (0.05) instead of % of strict threshold —
+  // prevents loose filter from being too aggressive when strict is high (e.g. 1.5 * 0.25 = 0.375)
+  const looseFeeFloor = Math.min(0.05, (s.minFeeActiveTvlRatio || 0.15) * 0.25);
   const looseFilters = [
     ...baseFilters,
     `base_token_holders>=50`,
     `tvl>=500`,
-    `fee_active_tvl_ratio>=${Math.max(0.02, (s.minFeeActiveTvlRatio || 0.4) * 0.25)}`,
+    `fee_active_tvl_ratio>=${looseFeeFloor}`,
   ].join("&&");
 
   // Scan multiple categories in parallel
