@@ -182,9 +182,9 @@ const toolMap = {
       // risk
       maxPositions: ["risk", "maxPositions"],
       maxDeployAmount: ["risk", "maxDeployAmount"],
-      // schedule
-      managementIntervalMin: ["schedule", "managementIntervalMin"],
-      screeningIntervalMin: ["schedule", "screeningIntervalMin"],
+      // schedule — locked, cannot be changed via update_config
+      // managementIntervalMin: ["schedule", "managementIntervalMin"],
+      // screeningIntervalMin: ["schedule", "screeningIntervalMin"],
       // models
       managementModel: ["llm", "managementModel"],
       screeningModel: ["llm", "screeningModel"],
