@@ -82,7 +82,8 @@ export function isEnabled() {
 }
 
 async function postTelegram(method, body) {
-  if (!TOKEN || !chatId) return null;
+  if (!TOKEN) { log("telegram_warn", "Telegram TOKEN not set — skipping send"); return null; }
+  if (!chatId) { log("telegram_warn", "Telegram chatId not set — skipping send"); return null; }
   try {
     const res = await fetch(`${BASE}/${method}`, {
       method: "POST",

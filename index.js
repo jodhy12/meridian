@@ -607,7 +607,7 @@ export async function runManagementCycle({ silent = false } = {}) {
           ? formatMgmtTelegram(positionData, actionMap, mgmtReport, config.management.solMode)
           : `🔄 <b>Management</b>\n\n${mdToTelegramHTML(stripThink(mgmtReport).substring(0, 500))}`;
         if (liveMessage) await liveMessage.finalize("").catch(() => {});
-        if (formatted) sendHTML(formatted).catch(() => { });
+        if (formatted) sendHTML(formatted).catch((e) => log("telegram_warn", `Management report send failed: ${e.message}`));
       }
       for (const p of positions) {
         if (!p.in_range && p.minutes_out_of_range >= config.management.outOfRangeWaitMinutes) {
@@ -906,7 +906,7 @@ Skipped: <comma list>
     if (!silent && telegramEnabled() && screenReport) {
       if (liveMessage) await liveMessage.finalize("").catch(() => {});
       const screenFormatted = formatScreenTelegram(screenReport);
-      if (screenFormatted) sendHTML(screenFormatted).catch(() => {});
+      if (screenFormatted) sendHTML(screenFormatted).catch((e) => log("telegram_warn", `Screening report send failed: ${e.message}`));
     }
   }
 
