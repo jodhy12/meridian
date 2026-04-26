@@ -212,6 +212,7 @@ export async function createLiveMessage(title, intro = "Starting...") {
     toolLines: [],
     footer: "",
     messageId: null,
+    lastSentText: null,
     flushTimer: null,
     flushPromise: null,
     flushRequested: false,
@@ -232,9 +233,12 @@ export async function createLiveMessage(title, intro = "Starting...") {
     if (!state.messageId) {
       const sent = await sendMessage(text);
       state.messageId = sent?.result?.message_id ?? null;
+      state.lastSentText = text;
       return;
     }
+    if (text === state.lastSentText) return; // skip — Telegram rejects identical edits
     await editMessage(text, state.messageId);
+    state.lastSentText = text;
   }
 
   function scheduleFlush(delay = 300) {
