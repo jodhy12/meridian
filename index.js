@@ -717,6 +717,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
       }
 
       // 2e. Technical signals (entry ok? bearish? volume spike?)
+      // Delay to avoid GeckoTerminal 429 — sequential calls, 2.5s apart
+      await new Promise(r => setTimeout(r, 2500));
       let tech = null;
       try {
         const raw = await getTechnicalSignals({ pool_address: pool.pool, timeframe: "15m" });

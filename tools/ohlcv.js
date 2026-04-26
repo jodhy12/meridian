@@ -250,11 +250,16 @@ async function fetchOhlcv(poolAddress, timeframe = "15m") {
   const rawLimit = tf.aggregate > 1 ? Math.min(tf.aggregate * 60, 1000) : 100;
   const url      = `${GECKOTERMINAL_BASE}/networks/solana/pools/${poolAddress}/ohlcv/${tf.gt}?limit=${rawLimit}&currency=usd`;
 
-  // Retry once on 429 with 3s backoff
-  let res = await fetch(url, { headers: { "Accept": "application/json;version=20230302" } });
+  // Retry up to 2x on 429 with exponential backoff
+  const HEADERS = { "Accept": "application/json;version=20230302" };
+  let res = await fetch(url, { headers: HEADERS });
   if (res.status === 429) {
-    await new Promise(r => setTimeout(r, 3000));
-    res = await fetch(url, { headers: { "Accept": "application/json;version=20230302" } });
+    await new Promise(r => setTimeout(r, 5000));
+    res = await fetch(url, { headers: HEADERS });
+  }
+  if (res.status === 429) {
+    await new Promise(r => setTimeout(r, 10000));
+    res = await fetch(url, { headers: HEADERS });
   }
   if (!res.ok) throw new Error(`GeckoTerminal OHLCV fetch failed: ${res.status} ${res.statusText}`);
 
