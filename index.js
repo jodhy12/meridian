@@ -8,7 +8,7 @@ import { getTechnicalSignals } from "./tools/ohlcv.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
-import { evolveThresholds, getPerformanceSummary, backfillSignalSnapshots } from "./lessons.js";
+import { evolveThresholds, getPerformanceSummary, backfillSignalSnapshots, recordScreeningOutcome } from "./lessons.js";
 import { registerCronRestarter, executeTool } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled, createLiveMessage } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
@@ -637,6 +637,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
     // ── Step 1: Discover + score candidates ─────────────────────────────────
     const { candidates = [] } = await getTopCandidates({ limit: 10 }).catch(() => ({}));
 
+    // Record outcome for scarcity detection (async, non-blocking)
+    recordScreeningOutcome(candidates.length);
+
     if (candidates.length === 0) {
       screenReport = `⛔ NO DEPLOY\n\nNo candidates passed discovery filters.`;
       return screenReport;
@@ -702,13 +705,17 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
       // 2f. Hard filter — bearish trend or overbought entry
       // Data: 9 losers had no entry filter; supertrend bearish = price likely to drop
+      // Supertrend only hard-blocks low-score pools (<60); high-confidence pools (≥60) pass with warning
       if (pool._exit_signal) {
         log("screening", `Filtered ${pool.name} — overbought at entry (exit signal active)`);
         continue;
       }
       if (tech?.indicators?.supertrend && !tech.indicators.supertrend.is_bullish) {
-        log("screening", `Filtered ${pool.name} — bearish supertrend (${tech.indicators.supertrend.direction})`);
-        continue;
+        if ((pool.score ?? 0) < 60) {
+          log("screening", `Filtered ${pool.name} — bearish supertrend (${tech.indicators.supertrend.direction}), score ${pool.score} < 60`);
+          continue;
+        }
+        log("screening", `Warning: ${pool.name} — bearish supertrend but score ${pool.score} ≥ 60, passing with caution`);
       }
 
       // Cache all signals for this pool so executor can inject signal_snapshot at deploy
@@ -731,6 +738,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
         // Activity (from Meteora API — best dead pool predictor)
         swap_count: pool.swap_count ?? null,
         unique_traders: pool.unique_traders ?? null,
+        // Scoring (for evolution tracking)
+        score: pool.score ?? null,
         // Technical (already fetched above)
         rsi2: pool._tech_snapshot?.rsi2 ?? null,
         supertrend_bullish: pool._tech_snapshot?.supertrend === "up" || (tech?.indicators?.supertrend?.is_bullish ?? null),

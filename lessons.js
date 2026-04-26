@@ -18,6 +18,8 @@ const LESSONS_FILE = path.join(__dirname, "lessons.json");
 const MIN_EVOLVE_POSITIONS = 5;   // don't evolve until we have real data
 const MAX_CHANGE_PER_STEP  = 0.20; // never shift a threshold more than 20% at once
 const MAX_MANUAL_LESSON_LENGTH = 400;
+const SCARCITY_WINDOW  = 6;  // look at last N screening outcomes
+const SCARCITY_THRESHOLD = 2; // avg candidates below this = scarcity mode
 
 function sanitizeLessonText(text, maxLen = MAX_MANUAL_LESSON_LENGTH) {
   if (text == null) return null;
@@ -32,17 +34,18 @@ function sanitizeLessonText(text, maxLen = MAX_MANUAL_LESSON_LENGTH) {
 
 function load() {
   if (!fs.existsSync(LESSONS_FILE)) {
-    return { lessons: [], performance: [] };
+    return { lessons: [], performance: [], screening_outcomes: [] };
   }
   try {
-    return JSON.parse(fs.readFileSync(LESSONS_FILE, "utf8"));
+    const d = JSON.parse(fs.readFileSync(LESSONS_FILE, "utf8"));
+    if (!d.screening_outcomes) d.screening_outcomes = [];
+    return d;
   } catch {
-    return { lessons: [], performance: [] };
+    return { lessons: [], performance: [], screening_outcomes: [] };
   }
 }
 
 function save(data) {
-  log('agent', JSON.stringify(data))
   fs.writeFileSync(LESSONS_FILE, JSON.stringify(data, null, 2));
 }
 
@@ -266,6 +269,40 @@ function derivLesson(perf) {
   };
 }
 
+// ─── Screening Outcome Tracking ────────────────────────────────
+
+/**
+ * Record how many candidates were found in a screening cycle.
+ * Used by scarcity detection to auto-relax thresholds.
+ */
+export async function recordScreeningOutcome(candidateCount) {
+  const data = load();
+  data.screening_outcomes.push({
+    t: new Date().toISOString(),
+    n: candidateCount,
+  });
+  // Keep only last 20 outcomes
+  if (data.screening_outcomes.length > 20) {
+    data.screening_outcomes = data.screening_outcomes.slice(-20);
+  }
+  save(data);
+
+  // Check scarcity independently — don't wait for position close to trigger evolution
+  const recent = data.screening_outcomes.slice(-SCARCITY_WINDOW);
+  if (
+    recent.length >= SCARCITY_WINDOW &&
+    avg(recent.map((o) => o.n)) < SCARCITY_THRESHOLD &&
+    data.performance.length >= MIN_EVOLVE_POSITIONS
+  ) {
+    const { config, reloadScreeningThresholds } = await import("./config.js");
+    const result = evolveThresholds(data.performance, config);
+    if (result?.changes && Object.keys(result.changes).length > 0) {
+      reloadScreeningThresholds();
+      log("evolve", `Scarcity-triggered evolution: ${JSON.stringify(result.changes)}`);
+    }
+  }
+}
+
 // ─── Adaptive Threshold Evolution ──────────────────────────────
 
 /**
@@ -286,33 +323,51 @@ export function evolveThresholds(perfData, config) {
   const hasSignal = winners.length >= 2 || losers.length >= 2;
   if (!hasSignal) return null;
 
+  // Detect candidate scarcity from screening outcomes
+  const data = load();
+  const recentOutcomes = data.screening_outcomes.slice(-SCARCITY_WINDOW);
+  const scarcityMode = recentOutcomes.length >= SCARCITY_WINDOW
+    && avg(recentOutcomes.map((o) => o.n)) < SCARCITY_THRESHOLD;
+
+  if (scarcityMode) {
+    log("evolve", `Scarcity mode: avg ${avg(recentOutcomes.map(o => o.n)).toFixed(1)} candidates over last ${recentOutcomes.length} screens — relaxing filters`);
+  }
+
   const changes   = {};
   const rationale = {};
 
   // ── 2. minFeeActiveTvlRatio ───────────────────────────────────
-  // Raise the floor if low-fee pools consistently underperform.
+  // Raise floor if low-fee pools underperform; lower if over-filtering (scarcity).
   {
     const winnerFees = winners.map((p) => p.fee_tvl_ratio).filter(isFiniteNum);
     const loserFees  = losers.map((p) => p.fee_tvl_ratio).filter(isFiniteNum);
     const current    = config.screening.minFeeActiveTvlRatio;
 
     if (winnerFees.length >= 2) {
-      // Minimum fee/TVL among winners — we know pools below this don't work for us
       const minWinnerFee = Math.min(...winnerFees);
+      const avgWinnerFee = avg(winnerFees);
       if (minWinnerFee > current * 1.2) {
-        const target  = minWinnerFee * 0.85; // stay slightly below min winner
+        // Raise: winners are all well above current floor
+        const target  = minWinnerFee * 0.85;
         const newVal  = clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 0.05, 10.0);
         const rounded = Number(newVal.toFixed(2));
         if (rounded > current) {
           changes.minFeeActiveTvlRatio = rounded;
-          rationale.minFeeActiveTvlRatio = `Lowest winner fee_tvl=${minWinnerFee.toFixed(2)} — raised floor from ${current} → ${rounded}`;
+          rationale.minFeeActiveTvlRatio = `Min winner fee_tvl=${minWinnerFee.toFixed(2)} — raised floor ${current} → ${rounded}`;
+        }
+      } else if (scarcityMode && avgWinnerFee < current * 1.1) {
+        // Lower: scarcity + winners barely above current floor → we're over-filtering
+        const target  = avgWinnerFee * 0.75;
+        const newVal  = clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 0.05, 10.0);
+        const rounded = Number(newVal.toFixed(2));
+        if (rounded < current) {
+          changes.minFeeActiveTvlRatio = rounded;
+          rationale.minFeeActiveTvlRatio = `Scarcity + avg winner fee_tvl=${avgWinnerFee.toFixed(2)} near floor — lowered ${current} → ${rounded}`;
         }
       }
     }
 
-    if (loserFees.length >= 2) {
-      // If losers all had high fee/TVL, that's noise (pumps then crash) — don't raise min
-      // But if losers had low fee/TVL, raise min
+    if (loserFees.length >= 2 && !changes.minFeeActiveTvlRatio) {
       const maxLoserFee = Math.max(...loserFees);
       if (maxLoserFee < current * 1.5 && winnerFees.length > 0) {
         const minWinnerFee = Math.min(...winnerFees);
@@ -320,10 +375,46 @@ export function evolveThresholds(perfData, config) {
           const target  = maxLoserFee * 1.2;
           const newVal  = clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 0.05, 10.0);
           const rounded = Number(newVal.toFixed(2));
-          if (rounded > current && !changes.minFeeActiveTvlRatio) {
+          if (rounded > current) {
             changes.minFeeActiveTvlRatio = rounded;
-            rationale.minFeeActiveTvlRatio = `Losers had fee_tvl<=${maxLoserFee.toFixed(2)}, winners higher — raised floor from ${current} → ${rounded}`;
+            rationale.minFeeActiveTvlRatio = `Losers fee_tvl<=${maxLoserFee.toFixed(2)}, winners higher — raised ${current} → ${rounded}`;
           }
+        }
+      }
+    }
+  }
+
+  // ── 2b. minVolume ─────────────────────────────────────────────
+  // Raise if losers had lower volume; lower in scarcity mode if winners are near floor.
+  {
+    const winnerVols = winners.map((p) => p.signal_snapshot?.volume ?? p.volume_window).filter(isFiniteNum);
+    const loserVols  = losers.map((p) => p.signal_snapshot?.volume ?? p.volume_window).filter(isFiniteNum);
+    const current    = config.screening.minVolume;
+
+    if (winnerVols.length >= 2 && loserVols.length >= 2) {
+      const avgWinnerVol = avg(winnerVols);
+      const avgLoserVol  = avg(loserVols);
+      if (avgWinnerVol > avgLoserVol * 1.5) {
+        // Winners have significantly more volume → raise floor
+        const minWinnerVol = Math.min(...winnerVols);
+        const target = minWinnerVol * 0.8;
+        const newVal = clamp(Math.round(nudge(current, target, MAX_CHANGE_PER_STEP)), 1000, 200_000);
+        if (newVal > current) {
+          changes.minVolume = newVal;
+          rationale.minVolume = `Winner avg vol ${avgWinnerVol.toFixed(0)} vs loser ${avgLoserVol.toFixed(0)} — raised ${current} → ${newVal}`;
+        }
+      }
+    }
+
+    if (scarcityMode && winnerVols.length >= 2 && !changes.minVolume) {
+      const avgWinnerVol = avg(winnerVols);
+      if (avgWinnerVol < current * 1.3) {
+        // Scarcity + winners barely above floor → lower it
+        const target = avgWinnerVol * 0.7;
+        const newVal = clamp(Math.round(nudge(current, target, MAX_CHANGE_PER_STEP)), 1000, 200_000);
+        if (newVal < current) {
+          changes.minVolume = newVal;
+          rationale.minVolume = `Scarcity + avg winner vol=${avgWinnerVol.toFixed(0)} near floor — lowered ${current} → ${newVal}`;
         }
       }
     }
@@ -354,8 +445,7 @@ export function evolveThresholds(perfData, config) {
   }
 
   // ── 4. maxVolatility ──────────────────────────────────────────
-  // Lower max volatility ceiling if high-vol pools consistently lose.
-  // Data: losers avg vol 4.37 vs winners avg 2.00
+  // Lower ceiling if high-vol pools consistently lose; raise if winners need more range.
   {
     const loserVols  = losers.map((p) => p.volatility).filter(isFiniteNum);
     const winnerVols = winners.map((p) => p.volatility).filter(isFiniteNum);
@@ -364,14 +454,55 @@ export function evolveThresholds(perfData, config) {
     if (loserVols.length >= 2 && winnerVols.length >= 1 && current != null) {
       const avgLoserVol  = avg(loserVols);
       const avgWinnerVol = avg(winnerVols);
-      // Only tighten if losers are clearly more volatile
       if (avgLoserVol - avgWinnerVol >= 1.0) {
+        // Tighten: losers are clearly more volatile
         const maxWinnerVol = Math.max(...winnerVols);
-        const target = Math.max(maxWinnerVol + 0.5, 3); // keep at least 3
+        const target = Math.max(maxWinnerVol + 0.5, 3);
         const newVal = Number(clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 3, 10).toFixed(1));
         if (newVal < current) {
           changes.maxVolatility = newVal;
-          rationale.maxVolatility = `Loser avg vol ${avgLoserVol.toFixed(1)} vs winner ${avgWinnerVol.toFixed(1)} — lowered from ${current} → ${newVal}`;
+          rationale.maxVolatility = `Loser avg vol ${avgLoserVol.toFixed(1)} vs winner ${avgWinnerVol.toFixed(1)} — lowered ${current} → ${newVal}`;
+        }
+      } else if (scarcityMode) {
+        // Relax: scarcity mode, winners and losers have similar vol → ceiling too tight
+        const maxWinnerVol = Math.max(...winnerVols);
+        if (maxWinnerVol > current * 0.85) {
+          const target = maxWinnerVol * 1.2;
+          const newVal = Number(clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 3, 10).toFixed(1));
+          if (newVal > current) {
+            changes.maxVolatility = newVal;
+            rationale.maxVolatility = `Scarcity + max winner vol=${maxWinnerVol.toFixed(1)} near ceiling — raised ${current} → ${newVal}`;
+          }
+        }
+      }
+    }
+  }
+
+  // ── 4b. minVolatility ─────────────────────────────────────────
+  // Lower floor if winners have lower volatility than the current minimum.
+  {
+    const winnerVols = winners.map((p) => p.volatility).filter(isFiniteNum);
+    const current    = config.screening.minVolatility ?? null;
+
+    if (current != null && winnerVols.length >= 2) {
+      const minWinnerVol = Math.min(...winnerVols);
+      if (minWinnerVol < current) {
+        // Winners exist below current floor → floor is cutting valid pools
+        const target = Math.max(minWinnerVol * 0.9, 0.5);
+        const newVal = Number(clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 0.5, 3).toFixed(1));
+        if (newVal < current) {
+          changes.minVolatility = newVal;
+          rationale.minVolatility = `Min winner vol=${minWinnerVol.toFixed(1)} below floor — lowered ${current} → ${newVal}`;
+        }
+      } else if (scarcityMode) {
+        const avgWinnerVol = avg(winnerVols);
+        if (avgWinnerVol < current * 1.5) {
+          const target = Math.max(avgWinnerVol * 0.6, 0.5);
+          const newVal = Number(clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 0.5, 3).toFixed(1));
+          if (newVal < current) {
+            changes.minVolatility = newVal;
+            rationale.minVolatility = `Scarcity + avg winner vol=${avgWinnerVol.toFixed(1)} near floor — lowered ${current} → ${newVal}`;
+          }
         }
       }
     }
@@ -421,6 +552,39 @@ export function evolveThresholds(perfData, config) {
     }
   }
 
+  // ── 7. bins_below optimization ───────────────────────────────
+  // Find the bins_below range that produced best average range_efficiency.
+  // Only adjust if we have enough data and clear signal.
+  {
+    const withBins = perfData.filter((p) =>
+      isFiniteNum(p.bin_range?.bins_below) && isFiniteNum(p.range_efficiency)
+    );
+    if (withBins.length >= MIN_EVOLVE_POSITIONS) {
+      // Group by bins_below bucket (±5)
+      const buckets = {};
+      for (const p of withBins) {
+        const bucket = Math.round(p.bin_range.bins_below / 5) * 5;
+        if (!buckets[bucket]) buckets[bucket] = [];
+        buckets[bucket].push(p.range_efficiency);
+      }
+      // Find best bucket with at least 2 samples
+      let bestBucket = null;
+      let bestEff = -Infinity;
+      for (const [bucket, effs] of Object.entries(buckets)) {
+        if (effs.length >= 2) {
+          const avgEff = avg(effs);
+          if (avgEff > bestEff) { bestEff = avgEff; bestBucket = Number(bucket); }
+        }
+      }
+      const currentBins = config.strategy?.binsBelow ?? null;
+      if (bestBucket != null && bestEff > 60 && currentBins != null && Math.abs(bestBucket - currentBins) >= 5) {
+        const newVal = clamp(bestBucket, 20, 80);
+        changes.binsBelow = newVal;
+        rationale.binsBelow = `Best range_efficiency ${bestEff.toFixed(0)}% at bins_below=${bestBucket} (${withBins.length} samples) — updated from ${currentBins}`;
+      }
+    }
+  }
+
   if (Object.keys(changes).length === 0) return { changes: {}, rationale: {} };
 
   // ── Persist changes to user-config.json ───────────────────────
@@ -438,21 +602,24 @@ export function evolveThresholds(perfData, config) {
   // Apply to live config object immediately
   const s = config.screening;
   if (changes.minFeeActiveTvlRatio != null) s.minFeeActiveTvlRatio = changes.minFeeActiveTvlRatio;
+  if (changes.minVolume            != null) s.minVolume            = changes.minVolume;
   if (changes.minOrganic           != null) s.minOrganic           = changes.minOrganic;
   if (changes.maxVolatility        != null) s.maxVolatility        = changes.maxVolatility;
+  if (changes.minVolatility        != null) s.minVolatility        = changes.minVolatility;
   if (changes.minHolders           != null) s.minHolders           = changes.minHolders;
   if (changes.minMcap              != null) s.minMcap              = changes.minMcap;
+  if (changes.binsBelow            != null && config.strategy) config.strategy.binsBelow = changes.binsBelow;
 
   // Log a lesson summarizing the evolution
-  const data = load();
-  data.lessons.push({
+  const lessonsData = load();
+  lessonsData.lessons.push({
     id: Date.now(),
     rule: `[AUTO-EVOLVED @ ${perfData.length} positions] ${Object.entries(changes).map(([k, v]) => `${k}=${v}`).join(", ")} — ${Object.values(rationale).join("; ")}`,
     tags: ["evolution", "config_change"],
     outcome: "manual",
     created_at: new Date().toISOString(),
   });
-  save(data);
+  save(lessonsData);
 
   return { changes, rationale };
 }
