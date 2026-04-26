@@ -341,48 +341,62 @@ function esc(s) {
 }
 
 // ─── Notification helpers ────────────────────────────────────────
-export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, binStep, baseFee }) {
+export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, binStep, baseFee, score, strategy, binsBelow, binsAbove }) {
   if (hasActiveLiveMessage()) return;
-  const priceStr = priceRange
-    ? `Price range: ${priceRange.min < 0.0001 ? priceRange.min.toExponential(3) : priceRange.min.toFixed(6)} – ${priceRange.max < 0.0001 ? priceRange.max.toExponential(3) : priceRange.max.toFixed(6)}\n`
+  const D = "━━━━━━━━━━━━━━━━━━━━";
+  const rangeStr = priceRange
+    ? `\n📍 <i>${priceRange.min < 0.0001 ? priceRange.min.toExponential(2) : priceRange.min.toFixed(6)} – ${priceRange.max < 0.0001 ? priceRange.max.toExponential(2) : priceRange.max.toFixed(6)}</i>`
     : "";
-  const poolStr = (binStep || baseFee)
-    ? `Bin step: ${binStep ?? "?"}  |  Base fee: ${baseFee != null ? baseFee + "%" : "?"}\n`
+  const metaStr = [
+    binStep  ? `step ${binStep}`   : null,
+    baseFee  ? `fee ${baseFee}%`   : null,
+    strategy ? esc(strategy)       : null,
+  ].filter(Boolean).join(" · ");
+  const binsStr = (binsBelow || binsAbove)
+    ? `\n🎯 Bins: ${binsBelow ?? "?"}↓ / ${binsAbove ?? "?"}↑`
     : "";
+  const scoreStr = score != null ? `  ·  score ${score}` : "";
   await sendHTML(
-    `✅ <b>Deployed</b> ${esc(pair)}\n` +
-    `Amount: ${amountSol} SOL\n` +
-    priceStr +
-    poolStr +
-    `Position: <code>${position?.slice(0, 8)}...</code>\n` +
-    `Tx: <code>${tx?.slice(0, 16)}...</code>`
+    `🚀 <b>Deployed — ${esc(pair)}</b>\n` +
+    `${D}\n` +
+    `💰 Amount: <b>${amountSol} SOL</b>${scoreStr}\n` +
+    (metaStr ? `⚙️ ${metaStr}` : "") +
+    binsStr +
+    rangeStr +
+    `\n${D}\n` +
+    `🔑 <code>${position?.slice(0, 12)}…</code>`
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlPct, feesUsd = 0, amountSol = 0, strategy = "", holdMinutes = 0, closeReason = "" }) {
+export async function notifyClose({ pair, pnlUsd, pnlPct, feesUsd = 0, amountSol = 0, strategy = "", holdMinutes = 0, closeReason = "", rangeEfficiency = null }) {
   if (hasActiveLiveMessage()) return;
-  const sign = pnlUsd >= 0 ? "+" : "";
-  const emoji = pnlUsd >= 0 ? "🟢" : "🔴";
+  const D = "━━━━━━━━━━━━━━━━━━━━";
+  const win = pnlUsd >= 0;
+  const sign = win ? "+" : "";
+  const headerEmoji = win ? "🟢" : "🔴";
+  const pnlEmoji = pnlPct >= 5 ? "🚀" : pnlPct >= 0 ? "📈" : pnlPct > -5 ? "📉" : "🔻";
   const isStopLoss = String(closeReason).toLowerCase().includes("stop loss");
   const pnlPctStr = isStopLoss && pnlPct > -10
     ? `${(pnlPct ?? 0).toFixed(2)}% ⚠️`
     : `${sign}${(pnlPct ?? 0).toFixed(2)}%`;
 
-  // Format hold time as Xh Ym
   const hours = Math.floor(holdMinutes / 60);
   const mins = holdMinutes % 60;
   const holdStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
 
+  const effStr = rangeEfficiency != null
+    ? `  ·  in-range ${rangeEfficiency.toFixed(0)}%`
+    : "";
+
   const lines = [
-    `${emoji} <b>Position Closed</b> — ${esc(pair)}`,
-    ``,
-    `💵 PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${pnlPctStr})`,
-    `💰 Fees earned: $${(feesUsd ?? 0).toFixed(2)}`,
+    `${headerEmoji} <b>Closed — ${esc(pair)}</b>`,
+    D,
+    `${pnlEmoji} PnL: <b>${sign}$${(pnlUsd ?? 0).toFixed(2)}</b>  <i>(${pnlPctStr})</i>`,
+    `💰 Fees: $${(feesUsd ?? 0).toFixed(2)}${effStr}`,
+    `⏱ Held: ${holdStr}` + (amountSol > 0 ? `  ·  ${amountSol} SOL` : ""),
   ];
-  if (amountSol > 0) lines.push(`🏦 Deployed: ${amountSol} SOL`);
-  if (strategy) lines.push(`📐 Strategy: ${esc(strategy)}`);
-  lines.push(`⏱ Hold time: ${holdStr}`);
-  if (closeReason) lines.push(`📋 Reason: ${esc(closeReason)}`);
+  if (strategy) lines.push(`📐 ${esc(strategy)}`);
+  if (closeReason) lines.push(`${D}\n📋 ${esc(closeReason)}`);
 
   await sendHTML(lines.join("\n"));
 }
@@ -400,17 +414,17 @@ export async function notifyTechnicalSignal({ pair, timeframe, rsi2, bbUpper, cu
 export async function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOut, tx }) {
   if (hasActiveLiveMessage()) return;
   await sendHTML(
-    `🔄 <b>Swapped</b> ${esc(inputSymbol)} → ${esc(outputSymbol)}\n` +
-    `In: ${amountIn ?? "?"} | Out: ${amountOut ?? "?"}\n` +
-    `Tx: <code>${tx?.slice(0, 16)}...</code>`
+    `🔁 <b>${esc(inputSymbol)} → ${esc(outputSymbol)}</b>\n` +
+    `<i>${amountIn ?? "?"} → ${amountOut ?? "?"}</i>\n` +
+    `🔑 <code>${tx?.slice(0, 16)}…</code>`
   );
 }
 
 export async function notifyOutOfRange({ pair, minutesOOR }) {
   if (hasActiveLiveMessage()) return;
   await sendHTML(
-    `⚠️ <b>Out of Range</b> ${esc(pair)}\n` +
-    `Been OOR for ${minutesOOR} minutes`
+    `⚠️ <b>Out of Range</b> — ${esc(pair)}\n` +
+    `🕐 OOR for <b>${minutesOOR}m</b>`
   );
 }
 

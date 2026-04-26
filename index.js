@@ -95,24 +95,43 @@ function escHTML(s) {
 /** Format management report for Telegram (compact HTML) */
 function formatMgmtTelegram(positionData, actionMap, mgmtReport, solMode) {
   const cur = solMode ? "◎" : "$";
+  const D = "━━━━━━━━━━━━━━━━━━━━";
+
   const lines = positionData.map((p) => {
     const act = actionMap.get(p.position) || { action: "STAY" };
-    const range = p.in_range ? "🟢" : "🔴";
-    const pnl = (p.pnl_pct ?? 0);
-    const pnlIcon = pnl >= 3 ? "🚀" : pnl >= 0 ? "📈" : pnl > -3 ? "📉" : "🔻";
-    const status = act.action === "CLOSE" ? "❌ CLOSE" : act.action === "CLAIM" ? "💰 CLAIM" : "✅ HOLD";
-    let line = `${range} <b>${escHTML(p.pair)}</b> ${pnlIcon} ${pnl.toFixed(2)}%\n` +
-      `   ${cur}${(p.total_value_usd ?? 0).toFixed(4)} | fee: ${cur}${(p.unclaimed_fees_usd ?? 0).toFixed(4)} | ${(p.age_minutes ?? 0)}m\n` +
-      `   ${status}`;
-    if (act.action === "CLOSE") line += ` — ${escHTML(act.reason?.substring(0, 50) ?? "")}`;
-    return line;
+    const pnl = p.pnl_pct ?? 0;
+    const rangeEmoji = p.in_range ? "🟢" : "🔴";
+    const pnlEmoji = pnl >= 3 ? "🚀" : pnl >= 0 ? "📈" : pnl > -3 ? "📉" : "🔻";
+    const pnlSign = pnl >= 0 ? "+" : "";
+
+    const actionLine = act.action === "CLOSE"
+      ? `❌ CLOSE — <i>${escHTML(act.reason?.substring(0, 60) ?? "")}</i>`
+      : act.action === "CLAIM"
+      ? `💰 CLAIM`
+      : `✅ HOLD`;
+
+    const val   = (p.total_value_usd ?? 0).toFixed(3);
+    const fee   = (p.unclaimed_fees_usd ?? 0).toFixed(4);
+    const age   = p.age_minutes ?? 0;
+    const ageStr = age >= 60 ? `${Math.floor(age/60)}h${age%60}m` : `${age}m`;
+
+    return (
+      `${rangeEmoji} <b>${escHTML(p.pair)}</b>  ${pnlEmoji} <b>${pnlSign}${pnl.toFixed(2)}%</b>\n` +
+      `   ${cur}${val}  ·  fee ${cur}${fee}  ·  ${ageStr}\n` +
+      `   ${actionLine}`
+    );
   });
 
   const totalVal = positionData.reduce((s, p) => s + (p.total_value_usd ?? 0), 0);
   const totalFee = positionData.reduce((s, p) => s + (p.unclaimed_fees_usd ?? 0), 0);
-  const header = `🔄 <b>Management</b> | ${positionData.length} pos | ${cur}${totalVal.toFixed(4)} | fee ${cur}${totalFee.toFixed(4)}`;
 
-  return `${header}\n\n${lines.join("\n\n")}`;
+  return (
+    `🔄 <b>Management</b>\n` +
+    `${D}\n` +
+    lines.join(`\n${D}\n`) +
+    `\n${D}\n` +
+    `📊 ${positionData.length} pos  ·  ${cur}${totalVal.toFixed(3)}  ·  fees ${cur}${totalFee.toFixed(4)}`
+  );
 }
 
 /** Convert basic markdown to Telegram HTML (escape first, then convert) */
@@ -133,14 +152,25 @@ function mdToTelegramHTML(text) {
 /** Format screening report for Telegram (compact HTML) */
 function formatScreenTelegram(rawReport) {
   if (!rawReport) return null;
+  const D = "━━━━━━━━━━━━━━━━━━━━";
   const text = stripThink(rawReport);
-  // Truncate at line boundary to avoid cutting in the middle of markdown
+
+  // Try to extract deploy outcome from report
+  const deployed = /deployed|position opened|✅/i.test(text);
+  const blocked  = /blocked|cooldown|no deploy|skip/i.test(text);
+  const noPass   = /no candidates|0 candidates|all.*filtered/i.test(text);
+
+  const icon = deployed ? "🚀" : blocked ? "⛔" : noPass ? "🔍" : "🔍";
+  const title = deployed ? "Deployed" : blocked ? "Blocked" : noPass ? "No Candidates" : "Screening";
+
+  // Truncate at line boundary
   let truncated = text;
-  if (text.length > 500) {
-    const cut = text.lastIndexOf("\n", 500);
-    truncated = text.substring(0, cut > 200 ? cut : 500) + "…";
+  if (text.length > 600) {
+    const cut = text.lastIndexOf("\n", 600);
+    truncated = text.substring(0, cut > 200 ? cut : 600) + "…";
   }
-  return `🔍 <b>Screening</b>\n\n${mdToTelegramHTML(truncated)}`;
+
+  return `${icon} <b>${title}</b>\n${D}\n${mdToTelegramHTML(truncated)}`;
 }
 
 
