@@ -12,7 +12,7 @@ import { evolveThresholds, getPerformanceSummary, backfillSignalSnapshots } from
 import { registerCronRestarter, executeTool } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled, createLiveMessage } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
-import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, setPositionInstruction, setLastTpCheckPct, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop, reconcileFromLessons } from "./state.js";
+import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, setLastTpCheckPct, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop, reconcileFromLessons } from "./state.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { getTokenInfo } from "./tools/token.js";
 import { cachePoolSignals } from "./screening-cache.js";
@@ -238,7 +238,10 @@ export async function runManagementCycle({ silent = false } = {}) {
   const screeningCooldownMs = 5 * 60 * 1000;
 
   try {
-    const livePositions = await getMyPositions({ force: true }).catch(() => null);
+    const livePositions = await getMyPositions({ force: true }).catch((e) => {
+      log("cron_error", `getMyPositions failed: ${e.message}`);
+      return null;
+    });
     positions = livePositions?.positions || [];
     timers._lastKnownPositionCount = positions.length;
     // Track max volatility for dynamic management interval
@@ -247,6 +250,14 @@ export async function runManagementCycle({ silent = false } = {}) {
       return tracked?.volatility ?? 0;
     });
     timers._lastKnownMaxVolatility = trackedVols.length > 0 ? Math.max(...trackedVols) : 0;
+
+    // Debug: compare API result vs state.js
+    const statePositions = getTrackedPositions(true);
+    if (positions.length !== statePositions.length) {
+      log("cron_warn", `Position mismatch: API=${positions.length} state=${statePositions.length} (state: ${statePositions.map(p => p.position_address?.slice(0,8)).join(", ")})`);
+    } else {
+      log("cron", `Positions: API=${positions.length} state=${statePositions.length}`);
+    }
 
     if (positions.length === 0) {
       log("cron", "No open positions — triggering screening cycle");
