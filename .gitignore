@@ -34,3 +34,7 @@ discord-signals.json
 
 # Claude Code runtime lock
 .claude/scheduled_tasks.lock
+
+# Encryption key
+.envrypt
+.env.raw

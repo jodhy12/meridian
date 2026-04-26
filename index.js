@@ -1,4 +1,5 @@
-import "dotenv/config";
+import { loadEnv } from "./envcrypt.js";
+loadEnv(); // load .env, decrypt encrypted keys if .envrypt exists
 import cron from "node-cron";
 import readline from "readline";
 import { agentLoop } from "./agent.js";

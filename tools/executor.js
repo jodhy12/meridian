@@ -33,6 +33,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "../user-config.json");
 import { log, logAction } from "../logger.js";
 import { notifyDeploy, notifyClose, notifySwap } from "../telegram.js";
+import { appendDecision } from "../decision-log.js";
 
 // Registered by index.js so update_config can restart cron jobs when intervals change
 let _cronRestarter = null;
@@ -381,8 +382,40 @@ export async function executeTool(name, args) {
         notifySwap({ inputSymbol: args.input_mint?.slice(0, 8), outputSymbol: args.output_mint === "So11111111111111111111111111111111111111112" || args.output_mint === "SOL" ? "SOL" : args.output_mint?.slice(0, 8), amountIn: result.amount_in, amountOut: result.amount_out, tx: result.tx }).catch(() => {});
       } else if (name === "deploy_position") {
         notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, binStep: result.bin_step, baseFee: result.base_fee, score: args.signal_snapshot?.score ?? null, strategy: args.strategy ?? null, binsBelow: args.bins_below ?? null, binsAbove: args.bins_above ?? null }).catch(() => {});
+        appendDecision({
+          type: "deploy",
+          actor: "SCREENER",
+          pool: args.pool_address,
+          pool_name: result.pool_name || args.pool_name,
+          position: result.position,
+          summary: `Deployed ${args.amount_y ?? args.amount_sol ?? 0} SOL into ${result.pool_name || args.pool_address?.slice(0, 8)}`,
+          reason: args.reason || args.rationale || null,
+          metrics: {
+            score: args.signal_snapshot?.score ?? null,
+            fee_tvl_ratio: args.signal_snapshot?.fee_tvl_ratio ?? null,
+            volatility: args.signal_snapshot?.volatility ?? null,
+            organic_score: args.signal_snapshot?.organic_score ?? null,
+            bin_step: result.bin_step ?? args.bin_step ?? null,
+          },
+        });
       } else if (name === "close_position") {
         notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, feesUsd: result.fees_earned_usd ?? 0, amountSol: result.amount_sol ?? 0, strategy: result.strategy ?? "", holdMinutes: result.hold_minutes ?? 0, closeReason: args.reason ?? "", rangeEfficiency: result.range_efficiency ?? null }).catch(() => {});
+        appendDecision({
+          type: "close",
+          actor: "MANAGER",
+          pool: result.pool || args.pool_address,
+          pool_name: result.pool_name || args.position_address?.slice(0, 8),
+          position: args.position_address,
+          summary: `Closed ${result.pool_name || args.position_address?.slice(0, 8)} | PnL ${result.pnl_pct >= 0 ? "+" : ""}${(result.pnl_pct ?? 0).toFixed(2)}%`,
+          reason: args.reason || null,
+          metrics: {
+            pnl_pct: result.pnl_pct ?? null,
+            pnl_usd: result.pnl_usd ?? null,
+            fees_earned_usd: result.fees_earned_usd ?? null,
+            hold_minutes: result.hold_minutes ?? null,
+            range_efficiency: result.range_efficiency ?? null,
+          },
+        });
         // Note low-yield closes in pool memory so screener avoids redeploying
         if (args.reason && args.reason.toLowerCase().includes("yield")) {
           const poolAddr = result.pool || args.pool_address;
