@@ -607,7 +607,7 @@ export async function runManagementCycle({ silent = false } = {}) {
           ? formatMgmtTelegram(positionData, actionMap, mgmtReport, config.management.solMode)
           : `🔄 <b>Management</b>\n\n${mdToTelegramHTML(stripThink(mgmtReport).substring(0, 500))}`;
         if (liveMessage) await liveMessage.finalize("").catch(() => {});
-        sendHTML(formatted).catch(() => { });
+        if (formatted) sendHTML(formatted).catch(() => { });
       }
       for (const p of positions) {
         if (!p.in_range && p.minutes_out_of_range >= config.management.outOfRangeWaitMinutes) {
@@ -905,7 +905,8 @@ Skipped: <comma list>
     }).catch(() => {});
     if (!silent && telegramEnabled() && screenReport) {
       if (liveMessage) await liveMessage.finalize("").catch(() => {});
-      sendHTML(formatScreenTelegram(screenReport)).catch(() => {});
+      const screenFormatted = formatScreenTelegram(screenReport);
+      if (screenFormatted) sendHTML(screenFormatted).catch(() => {});
     }
   }
 
