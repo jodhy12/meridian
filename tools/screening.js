@@ -470,11 +470,12 @@ function scoreCandidate(pool, smartWalletsPresent = false) {
   score += feePts;
   breakdown.fee_tvl = `${feeTvl}% → +${feePts} (target ${feeTvlTarget}%)`;
 
-  // ── Organic score (30 pts max) ────────────────────────────────
-  // Filters bot-inflated volume. Scaled from 50 (min) to 100 (max).
-  // Sourced directly from pool discovery API — always available.
+  // ── Organic score (20 pts max, down from 30) ─────────────────
+  // Data: winners avg organic 78.35 vs losers 78.20 — almost no difference.
+  // Still useful to filter bot-inflated volume, but less predictive than expected.
+  // Reduced weight to free up score room for activity signals (swap_count).
   const organic = Number(pool.organic_score || 0);
-  const organicPts = organic < 50 ? 0 : Math.min(30, Math.round((organic - 50) / 50 * 30));
+  const organicPts = organic < 50 ? 0 : Math.min(20, Math.round((organic - 50) / 50 * 20));
   score += organicPts;
   breakdown.organic = `${organic} → +${organicPts}`;
 
@@ -506,11 +507,12 @@ function scoreCandidate(pool, smartWalletsPresent = false) {
   breakdown.token_age = `${Math.round(ageHours / 24)}d → +${agePts}`;
 
   // ── Volatility bonus/penalty (+5 to -35) ─────────────────────
-  // Low volatility = stays in range (fees compound).
-  // High volatility = OOR fast, IL accumulates.
-  // Data: vol>5 → BURNIE -7.73%, Freg -4.36%. vol≤3 → mostly profitable.
+  // Data: winners avg vol 3.54 vs losers 3.99 — sweet spot is 2-4, not ≤3.
+  // vol<2 = too quiet (little price action = fewer trades = fewer fees).
+  // vol 2-4 = sweet spot: enough activity for fees, not so much IL kills gains.
+  // vol>5 = danger: OOR too fast, IL > fees. Data: vol>5 avg -4% PnL.
   const vol = Number(pool.volatility || 0);
-  const volPts = vol <= 3 ? 5 : vol <= 5 ? 0 : vol <= 7 ? -25 : -35;
+  const volPts = vol < 2 ? 2 : vol <= 4 ? 5 : vol <= 5 ? 0 : vol <= 7 ? -25 : -35;
   score += volPts;
   breakdown.volatility = `${vol} → ${volPts >= 0 ? "+" : ""}${volPts}`;
 
@@ -538,8 +540,8 @@ function scoreCandidate(pool, smartWalletsPresent = false) {
   // Data: 65% of pools with good fee/TVL but low activity produce zero fees.
   const swaps   = Number(pool.swap_count ?? 0);
   const traders = Number(pool.unique_traders ?? 0);
-  const activityPts = (swaps >= 20 ? 5 : swaps >= 10 ? 3 : 0)
-                    + (traders >= 10 ? 5 : traders >= 5 ? 3 : 0);
+  const activityPts = (swaps >= 50 ? 7 : swaps >= 20 ? 5 : swaps >= 10 ? 3 : 0)
+                    + (traders >= 20 ? 5 : traders >= 10 ? 3 : traders >= 5 ? 1 : 0);
   score += activityPts;
   breakdown.activity = `swaps=${swaps} traders=${traders} → +${activityPts}`;
 
