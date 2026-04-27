@@ -550,6 +550,19 @@ async function runSafetyChecks(name, args) {
         }
       }
 
+      // Dead pool guard: check recent swap activity from screening cache
+      const cachedSignals = getCachedPoolSignals(args.pool_address);
+      if (cachedSignals) {
+        const swaps = Number(cachedSignals.swap_count ?? 0);
+        const traders = Number(cachedSignals.unique_traders ?? 0);
+        if (swaps < 5 && traders < 3) {
+          return {
+            pass: false,
+            reason: `Pool has very low activity (${swaps} swaps, ${traders} traders) — likely dead pool. Skip to avoid zero-fee position.`,
+          };
+        }
+      }
+
       // Check amount limits
       const amountY = args.amount_y ?? args.amount_sol ?? 0;
       if (amountY <= 0) {

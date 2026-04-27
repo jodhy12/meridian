@@ -111,7 +111,7 @@ function formatMgmtTelegram(positionData, actionMap, mgmtReport, solMode) {
       ? `💰 CLAIM fees`
       : `✅ HOLD`;
 
-    const val    = (p.total_value_usd ?? 0).toFixed(3);
+    const val    = (p.total_value_usd ?? 0).toFixed(4);
     const fee    = (p.unclaimed_fees_usd ?? 0).toFixed(4);
     const age    = p.age_minutes ?? 0;
     const ageStr = age >= 60 ? `${Math.floor(age/60)}h${age%60 > 0 ? age%60+"m" : ""}` : `${age}m`;
@@ -160,7 +160,7 @@ function formatMgmtTelegram(positionData, actionMap, mgmtReport, solMode) {
     `${D}\n` +
     lines.join(`\n${D}\n`) +
     `\n${D}\n` +
-    `📊 ${positionData.length} pos  ·  ${cur}${totalVal.toFixed(3)}  ·  PnL ${pnlSign}${cur}${totalPnl.toFixed(4)}  ·  fees ${cur}${totalFee.toFixed(4)}`
+    `📊 ${positionData.length} pos  ·  ${cur}${totalVal.toFixed(4)}  ·  PnL ${pnlSign}${cur}${totalPnl.toFixed(4)}  ·  fees ${cur}${totalFee.toFixed(4)}`
   );
 }
 

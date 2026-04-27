@@ -862,8 +862,15 @@ export async function closePosition({ position_address, reason }) {
 
     // Record performance for learning
     if (tracked) {
-      const deployedAt = new Date(tracked.deployed_at).getTime();
-      const minutesHeld = Math.floor((Date.now() - deployedAt) / 60000);
+      const deployedAt = tracked.deployed_at ? new Date(tracked.deployed_at).getTime() : NaN;
+      let minutesHeld = Number.isFinite(deployedAt) ? Math.floor((Date.now() - deployedAt) / 60000) : 0;
+      if (minutesHeld <= 0 && tracked.deployed_at) {
+        log("close_warn", `minutes_held=${minutesHeld} for deployed_at=${tracked.deployed_at} — possible clock/parse issue`);
+        minutesHeld = Math.max(minutesHeld, 0);
+      }
+      if (!tracked.deployed_at) {
+        log("close_warn", `No deployed_at in tracked state for ${position_address} — minutes_held will be 0`);
+      }
 
       let minutesOOR = 0;
       if (tracked.out_of_range_since) {
