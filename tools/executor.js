@@ -551,14 +551,17 @@ async function runSafetyChecks(name, args) {
       }
 
       // Dead pool guard: check recent swap activity from screening cache
+      // Data: pools with <30 swaps or <15 traders in timeframe consistently produce zero fees
       const cachedSignals = getCachedPoolSignals(args.pool_address);
       if (cachedSignals) {
         const swaps = Number(cachedSignals.swap_count ?? 0);
         const traders = Number(cachedSignals.unique_traders ?? 0);
-        if (swaps < 5 && traders < 3) {
+        const minSwaps = config.screening.minSwapCount ?? 30;
+        const minTraders = config.screening.minUniqueTraders ?? 15;
+        if (swaps < minSwaps || traders < minTraders) {
           return {
             pass: false,
-            reason: `Pool has very low activity (${swaps} swaps, ${traders} traders) — likely dead pool. Skip to avoid zero-fee position.`,
+            reason: `Pool has low activity (${swaps} swaps, ${traders} traders) — likely dead pool. Need ≥${minSwaps} swaps and ≥${minTraders} traders.`,
           };
         }
       }

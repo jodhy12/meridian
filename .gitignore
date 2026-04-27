@@ -17,6 +17,8 @@ pool-memory.json
 token-blacklist.json
 strategy-library.json
 signal-weights.json
+decision-log.json
+
 # Logs
 logs/
 
