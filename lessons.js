@@ -552,38 +552,10 @@ export function evolveThresholds(perfData, config) {
     }
   }
 
-  // ── 7. bins_below optimization ───────────────────────────────
-  // Find the bins_below range that produced best average range_efficiency.
-  // Only adjust if we have enough data and clear signal.
-  {
-    const withBins = perfData.filter((p) =>
-      isFiniteNum(p.bin_range?.bins_below) && isFiniteNum(p.range_efficiency)
-    );
-    if (withBins.length >= MIN_EVOLVE_POSITIONS) {
-      // Group by bins_below bucket (±5)
-      const buckets = {};
-      for (const p of withBins) {
-        const bucket = Math.round(p.bin_range.bins_below / 5) * 5;
-        if (!buckets[bucket]) buckets[bucket] = [];
-        buckets[bucket].push(p.range_efficiency);
-      }
-      // Find best bucket with at least 2 samples
-      let bestBucket = null;
-      let bestEff = -Infinity;
-      for (const [bucket, effs] of Object.entries(buckets)) {
-        if (effs.length >= 2) {
-          const avgEff = avg(effs);
-          if (avgEff > bestEff) { bestEff = avgEff; bestBucket = Number(bucket); }
-        }
-      }
-      const currentBins = config.strategy?.binsBelow ?? null;
-      if (bestBucket != null && bestEff > 60 && currentBins != null && Math.abs(bestBucket - currentBins) >= 5) {
-        const newVal = clamp(bestBucket, 20, 80);
-        changes.binsBelow = newVal;
-        rationale.binsBelow = `Best range_efficiency ${bestEff.toFixed(0)}% at bins_below=${bestBucket} (${withBins.length} samples) — updated from ${currentBins}`;
-      }
-    }
-  }
+  // ── 7. bins_below optimization — DISABLED ────────────────────
+  // Self-reinforcing loop: all historical data used bins_below=20, so evolve
+  // always resets to 20 regardless of manual config. Disabled to allow manual
+  // tuning. Optimal range from external data: 30-60 bins.
 
   if (Object.keys(changes).length === 0) return { changes: {}, rationale: {} };
 
@@ -608,7 +580,7 @@ export function evolveThresholds(perfData, config) {
   if (changes.minVolatility        != null) s.minVolatility        = changes.minVolatility;
   if (changes.minHolders           != null) s.minHolders           = changes.minHolders;
   if (changes.minMcap              != null) s.minMcap              = changes.minMcap;
-  if (changes.binsBelow            != null && config.strategy) config.strategy.binsBelow = changes.binsBelow;
+  // binsBelow evolution disabled — see section 7 comment above
 
   // Log a lesson summarizing the evolution
   const lessonsData = load();

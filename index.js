@@ -781,11 +781,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         continue;
       }
       if (tech?.indicators?.supertrend && !tech.indicators.supertrend.is_bullish) {
-        if ((pool.score ?? 0) < 60) {
-          log("screening", `Filtered ${pool.name} — bearish supertrend (${tech.indicators.supertrend.direction}), score ${pool.score} < 60`);
-          continue;
-        }
-        log("screening", `Warning: ${pool.name} — bearish supertrend but score ${pool.score} ≥ 60, passing with caution`);
+        log("screening", `Warning: ${pool.name} — bearish supertrend (${tech.indicators.supertrend.direction}), score ${pool.score}. Passing anyway`);
       }
 
       // Cache all signals for this pool so executor can inject signal_snapshot at deploy
