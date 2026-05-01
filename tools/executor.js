@@ -550,6 +550,17 @@ async function runSafetyChecks(name, args) {
         }
       }
 
+      // Minimum score guard: prevent LLM from deploying low-conviction candidates
+      // Data: 15 wins / 130 losses — model picks poorly, enforce minimum quality
+      const cachedScore = getCachedPoolSignals(args.pool_address)?.score;
+      const minDeployScore = config.screening.minDeployScore ?? 55;
+      if (cachedScore != null && cachedScore < minDeployScore) {
+        return {
+          pass: false,
+          reason: `Pool score ${cachedScore} is below minimum deploy threshold (${minDeployScore}). Need stronger conviction.`,
+        };
+      }
+
       // Dead pool guard: check recent swap activity from screening cache
       // Data: pools with <30 swaps or <15 traders in timeframe consistently produce zero fees
       const cachedSignals = getCachedPoolSignals(args.pool_address);
