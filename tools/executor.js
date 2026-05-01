@@ -12,7 +12,7 @@ import {
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
-import { setPositionInstruction, getTrackedPositions } from "../state.js";
+import { setPositionInstruction, getTrackedPositions, getTrackedPosition } from "../state.js";
 import { computeDeployAmount } from "../config.js";
 
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
@@ -623,6 +623,37 @@ async function runSafetyChecks(name, args) {
         args.bins_above = minAbove;
       }
 
+      return { pass: true };
+    }
+
+    case "close_position": {
+      // Gas break-even guard: prevent closing positions where PnL is positive
+      // but too small to cover gas costs (~0.004 SOL ≈ 2% on 0.2 SOL deploy).
+      // Only applies to discretionary closes — rule-based exits (stop loss, OOR,
+      // IL stop, trailing TP) are always allowed through.
+      const reason = (args.reason || "").toLowerCase();
+      const isRuleBased = /stop.?loss|oor|out.?of.?range|trailing|il.?stop|early.?il|instruction|stale|dead|technical|exit_signal/i.test(reason);
+      if (!isRuleBased && args.position_address) {
+        try {
+          const tracked = getTrackedPosition(args.position_address);
+          if (tracked?.pool_address) {
+            const pnl = await getPositionPnl({
+              pool_address: tracked.pool_address,
+              position_address: args.position_address,
+            });
+            if (pnl && !pnl.error) {
+              const deployAmt = config.management.deployAmountSol ?? 0.2;
+              const gasCostPct = (0.004 / deployAmt) * 100; // ~2% on 0.2 SOL
+              if (pnl.pnl_pct > 0 && pnl.pnl_pct < gasCostPct) {
+                return {
+                  pass: false,
+                  reason: `Gas break-even guard: PnL +${pnl.pnl_pct}% is below gas cost (~${gasCostPct.toFixed(1)}% on ${deployAmt} SOL deploy). Not worth closing — let it run toward TP.`,
+                };
+              }
+            }
+          }
+        } catch { /* best effort — don't block close on fetch error */ }
+      }
       return { pass: true };
     }
 

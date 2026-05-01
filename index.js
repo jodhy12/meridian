@@ -824,6 +824,16 @@ export async function runScreeningCycle({ silent = false } = {}) {
       return screenReport;
     }
 
+    // ── Anti force-deploy: skip LLM if no candidate meets minimum score ────
+    const minScore = config.screening.minDeployScore ?? 55;
+    const bestScore = Math.max(...enriched.map(({ pool }) => pool.score ?? 0));
+    if (bestScore < minScore) {
+      const names = enriched.map(({ pool }) => `${pool.name}(${pool.score})`).join(", ");
+      log("screening", `All candidates below minDeployScore (${minScore}): ${names} — skipping LLM`);
+      screenReport = `⛔ NO DEPLOY\n\nAll ${enriched.length} candidates scored below minimum (${minScore}). Best: ${bestScore}. Skipped LLM to save tokens.\nCandidates: ${names}`;
+      return screenReport;
+    }
+
     // ── Step 3: Build candidate blocks for LLM ──────────────────────────────
     const candidateBlocks = enriched.map(({ pool, ti }) => {
       const vol      = Number(pool.volatility || 0);
