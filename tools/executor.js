@@ -551,10 +551,21 @@ async function runSafetyChecks(name, args) {
       }
 
       // Minimum score guard: prevent LLM from deploying low-conviction candidates
-      // Data: 15 wins / 130 losses — model picks poorly, enforce minimum quality
-      const cachedScore = getCachedPoolSignals(args.pool_address)?.score;
+      // Data: 10 deploys with score=null bypassed this check — now blocks null scores too
+      const cachedSignalsForScore = getCachedPoolSignals(args.pool_address);
+      const cachedScore = cachedSignalsForScore?.score;
       const minDeployScore = config.screening.minDeployScore ?? 55;
-      if (cachedScore != null && cachedScore < minDeployScore) {
+      if (cachedScore == null) {
+        // Allow if no cache at all (manual GENERAL deploy) but warn
+        if (cachedSignalsForScore != null) {
+          // Cache exists but score is null = scoring failed — block
+          return {
+            pass: false,
+            reason: `Pool has no score (scoring failed or missing). Cannot deploy without conviction score ≥ ${minDeployScore}.`,
+          };
+        }
+        log("executor", `No screening cache for ${args.pool_address} — manual deploy, skipping score check`);
+      } else if (cachedScore < minDeployScore) {
         return {
           pass: false,
           reason: `Pool score ${cachedScore} is below minimum deploy threshold (${minDeployScore}). Need stronger conviction.`,
