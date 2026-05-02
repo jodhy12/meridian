@@ -639,9 +639,9 @@ async function runSafetyChecks(name, args) {
 
     case "close_position": {
       // Gas break-even guard: prevent closing positions where PnL is positive
-      // but too small to cover gas costs (~0.004 SOL ≈ 2% on 0.2 SOL deploy).
-      // Only applies to discretionary closes — rule-based exits (stop loss, OOR,
-      // IL stop, trailing TP) are always allowed through.
+      // but too small to cover actual tx fees (~0.002 SOL per cycle, verified on-chain).
+      // Rent deposit (0.06-0.10 SOL) is refundable — not a real cost.
+      // Only applies to discretionary closes — rule-based exits always allowed through.
       const reason = (args.reason || "").toLowerCase();
       const isRuleBased = /stop.?loss|oor|out.?of.?range|trailing|il.?stop|early.?il|instruction|stale|dead|technical|exit_signal/i.test(reason);
       if (!isRuleBased && args.position_address) {
@@ -654,7 +654,8 @@ async function runSafetyChecks(name, args) {
             });
             if (pnl && !pnl.error) {
               const deployAmt = config.management.deployAmountSol ?? 0.2;
-              const gasCostPct = (0.004 / deployAmt) * 100; // ~2% on 0.2 SOL
+              const gasCostSol = 0.002; // actual tx fees per cycle (on-chain verified)
+              const gasCostPct = (gasCostSol / deployAmt) * 100; // ~1% on 0.2, ~0.4% on 0.5
               if (pnl.pnl_pct > 0 && pnl.pnl_pct < gasCostPct) {
                 return {
                   pass: false,
