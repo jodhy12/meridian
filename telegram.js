@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
+import { config } from "./config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -393,11 +394,12 @@ export async function notifyClose({ pair, pnlUsd, pnlPct, feesUsd = 0, amountSol
     ? `  ·  in-range ${rangeEfficiency.toFixed(0)}%`
     : "";
 
+  const cur = config.management.solMode ? "◎" : "$";
   const lines = [
     `${headerEmoji} <b>Closed — ${esc(pair)}</b>`,
     D,
-    `${pnlEmoji} PnL: <b>${sign}$${(pnlUsd ?? 0).toFixed(2)}</b>  <i>(${pnlPctStr})</i>`,
-    `💰 Fees: $${(feesUsd ?? 0).toFixed(2)}${effStr}`,
+    `${pnlEmoji} PnL: <b>${sign}${cur}${(pnlUsd ?? 0).toFixed(4)}</b>  <i>(${pnlPctStr})</i>`,
+    `💰 Fees: ${cur}${(feesUsd ?? 0).toFixed(4)}${effStr}`,
     `⏱ Held: ${holdStr}` + (amountSol > 0 ? `  ·  ${amountSol} SOL` : ""),
   ];
   if (strategy) lines.push(`📐 ${esc(strategy)}`);
