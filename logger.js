@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { config } from "./config.js";
 
 const LOG_DIR = "./logs";
 const LOG_LEVEL = process.env.LOG_LEVEL || "info";
@@ -42,7 +43,13 @@ function actionHint(action) {
   const r = action.result || {};
   switch (action.tool) {
     case "deploy_position":   return ` ${a.pool_name || a.pool_address?.slice(0,8)} ${a.amount_y ?? a.amount_sol ?? "?"} SOL`;
-    case "close_position":    return ` ${a.position_address?.slice(0,8)}${r.pnl_usd != null ? ` | PnL $${r.pnl_usd >= 0 ? "+" : ""}${r.pnl_usd} (${r.pnl_pct}%)` : ""}`;
+    case "close_position": {
+      const cur = config.management?.solMode ? "◎" : "$";
+      const pnlVal = r.pnl_usd != null ? Number(r.pnl_usd) : null;
+      const pnlPct = r.pnl_pct != null ? Number(r.pnl_pct) : null;
+      if (pnlVal == null) return ` ${a.position_address?.slice(0,8)}`;
+      return ` ${a.position_address?.slice(0,8)} | PnL ${cur}${pnlVal >= 0 ? "+" : ""}${pnlVal.toFixed(4)} (${(pnlPct ?? 0).toFixed(2)}%)`;
+    }
     case "claim_fees":        return ` ${a.position_address?.slice(0,8)}`;
     case "get_active_bin":    return ` bin ${r.binId ?? ""}`;
     case "get_pool_detail":   return ` ${r.name || a.pool_address?.slice(0,8) || ""}`;
