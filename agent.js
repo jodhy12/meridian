@@ -200,6 +200,15 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             tool_choice: toolChoice,
             temperature: config.llm.temperature,
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
+            // OpenRouter provider routing — prefer fast providers with prompt caching
+            // Order by: low latency × good cache discount × no premium pricing
+            // Skip: SiliconFlow (slow), Vertex (no cache), Friendli/AtlasCloud Fast (2× price)
+            ...(usedModel.startsWith("deepseek/") ? {
+              provider: {
+                order: ["DeepInfra", "Alibaba", "NovitaAI", "AtlasCloud"],
+                allow_fallbacks: true,
+              },
+            } : {}),
           });
         } catch (error) {
           if (providerMode === "system" && isSystemRoleError(error)) {
