@@ -588,6 +588,17 @@ async function runSafetyChecks(name, args) {
         }
       }
 
+      // Rug protection: block deploy when critical data is missing
+      // MOGMAN-SOL: holder_count=null, rsi2=null, supertrend=null → rugged -83% in 5 min
+      if (cachedSignals) {
+        if (cachedSignals.holder_count == null && cachedSignals.bot_holders_pct == null) {
+          return {
+            pass: false,
+            reason: `Missing holder data (holder_count and bot_holders_pct both null). Cannot assess rug risk — skipping.`,
+          };
+        }
+      }
+
       // Check amount limits
       const amountY = args.amount_y ?? args.amount_sol ?? 0;
       if (amountY <= 0) {

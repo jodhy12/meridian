@@ -747,7 +747,14 @@ export async function runScreeningCycle({ silent = false } = {}) {
         continue;
       }
 
-      // 2e. Technical signals (entry ok? bearish? volume spike?)
+      // 2e. Pump trap filter — fee_tvl > 6 is almost always a post-pump signal
+      // Data: MOGMAN -83% (fee_tvl 6.09), Freg -4.36% (7.9), Rise -4.19% (8.4), POKE6900 -1.54% (8.2)
+      if ((pool.fee_active_tvl_ratio ?? 0) > 6) {
+        log("screening", `Filtered ${pool.name} — pump trap: fee_tvl=${pool.fee_active_tvl_ratio} > 6 (post-pump, high rug risk)`);
+        continue;
+      }
+
+      // 2f. Technical signals (entry ok? bearish? volume spike?)
       // Delay to avoid GeckoTerminal 429 — sequential calls, 2.5s apart
       await new Promise(r => setTimeout(r, 2500));
       let tech = null;
