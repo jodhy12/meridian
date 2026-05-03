@@ -677,7 +677,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       return screenReport;
     }
 
-    const minRequired = config.management.deployAmountSol + config.management.gasReserve;
+    const minRequired = Math.max(config.management.minSolToOpen, config.management.deployAmountSol + config.management.gasReserve);
     if (process.env.DRY_RUN !== "true" && balance.sol < minRequired) {
       screenReport = `Screening skipped — insufficient SOL (${balance.sol.toFixed(3)} < ${minRequired}).`;
       log("cron", screenReport);
@@ -1542,27 +1542,12 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   maybeRunMissedBriefing().catch(() => { });
   startPolling(telegramHandler);
   (async () => {
-    // Block screening cron while startup agent runs (prevents race / double deploy)
-    _screeningBusy = true;
-    _screeningLastTriggered = Date.now();
+    // Startup uses the full screening cycle (with all guards: score, enrichment, anti force-deploy)
     try {
-      const startupStep3 = process.env.DRY_RUN === "true"
-        ? `3. Ignore wallet SOL threshold in dry run: get_top_candidates then simulate deploy ${DEPLOY} SOL.`
-        : `3. If SOL >= ${config.management.minSolToOpen}: get_top_candidates then deploy ${DEPLOY} SOL.`;
-      await agentLoop(`
-STARTUP CHECK
-1. get_wallet_balance. 2. get_my_positions. ${startupStep3} 4. Report.
-      `, config.llm.maxSteps, [], "SCREENER");
+      log("startup", "Running startup screening cycle...");
+      await runScreeningCycle({ silent: false });
     } catch (e) {
       log("startup_error", e.message);
-    } finally {
-      // Refresh position count so management/screening crons pick up any deploy
-      getMyPositions({ force: true }).then(r => {
-        timers._lastKnownPositionCount = r?.positions?.length ?? 0;
-        const vols = (r?.positions || []).map(p => getTrackedPosition(p.position)?.volatility ?? 0);
-        timers._lastKnownMaxVolatility = vols.length > 0 ? Math.max(...vols) : 0;
-      }).catch(() => {});
-      _screeningBusy = false;
     }
   })();
 }

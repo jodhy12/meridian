@@ -556,15 +556,11 @@ async function runSafetyChecks(name, args) {
       const cachedScore = cachedSignalsForScore?.score;
       const minDeployScore = config.screening.minDeployScore ?? 55;
       if (cachedScore == null) {
-        // Allow if no cache at all (manual GENERAL deploy) but warn
-        if (cachedSignalsForScore != null) {
-          // Cache exists but score is null = scoring failed — block
-          return {
-            pass: false,
-            reason: `Pool has no score (scoring failed or missing). Cannot deploy without conviction score ≥ ${minDeployScore}.`,
-          };
-        }
-        log("executor", `No screening cache for ${args.pool_address} — manual deploy, skipping score check`);
+        // Block deploy without score — prevents startup bypass and unscored pools
+        return {
+          pass: false,
+          reason: `No screening score for this pool (cache ${cachedSignalsForScore != null ? "exists but score null" : "empty"}). Cannot deploy without conviction score ≥ ${minDeployScore}. Run screening first.`,
+        };
       } else if (cachedScore < minDeployScore) {
         return {
           pass: false,
