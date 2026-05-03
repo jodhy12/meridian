@@ -920,16 +920,18 @@ ${candidateBlocks.join("\n\n")}
 DEPLOY RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. Pick the highest-score candidate that passes judgment.
-   Score ≥ 55 = deploy. 50–54 = only if smart_money or kol confirmed. < 50 = skip.
-   Data: 72 positions closed, score ≥ 55 + fee_tvl ≥ 0.5% is the minimum viable threshold.
+   Score ≥ ${config.screening.minDeployScore + 15} = strong deploy. ${config.screening.minDeployScore}–${config.screening.minDeployScore + 14} = deploy only if smart_money/kol confirmed OR strong fee_tvl. < ${config.screening.minDeployScore} = skip.
+   Note: scoring system uses evolved weights (signal-weights.json) — score is INDICATIVE not absolute. Trust multi-signal confirmation over score alone.
 2. SKIP if: tech entry_warnings OR exit_signal_active (overbought).
 3. Use bins_below/bins_above exactly as pre-computed — do NOT recalculate.
 4. Call deploy_position with: strategy="bid_ask", amount_y=${deployAmount}
 
-SCORING GUIDANCE (from 72 closed positions):
-- SWEET SPOT: fee_tvl ≥ 3 + vol 2–5 → 4 wins / 0 losses. Boost score +10.
-- AVOID ZONE: fee_tvl < 3 + vol < 2 → 0 wins / 3 losses. Penalize score -10.
-- fee_tvl ≥ 6 + vol 5+ → trap (high fee from dump volatility). Penalize score -15.
+SCORING GUIDANCE (multi-signal pattern recognition):
+- SWEET SPOT: fee_tvl near scoring target + vol 2-4 + organic ≥ 70 + age ≥ 24h → strong deploy
+- DEAD POOL RISK: fee_tvl very low OR volatility too quiet → likely zero fees post-deploy
+- PUMP TRAP: fee_tvl far above target (e.g. 5×+) → already pumped, distribution phase, AVOID
+- Bot holders near filter cap (${config.screening.maxBotHoldersPct}%) = elevated risk, prefer pools with lower bot %
+- Trust multi-signal confirmation. Score alone is INDICATIVE — high score + bad price action = skip.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 REPORT FORMAT

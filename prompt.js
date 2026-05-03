@@ -119,7 +119,8 @@ All candidates are pre-scored and pre-enriched. Pick the highest-score candidate
 HARD RULES:
 - fees_sol < ${config.screening.minTokenFeesSol} → SKIP (bundled/scam)
 - exit_signal_active → SKIP (overbought)
-- score < 50 → SKIP unless strong compensating factor
+- score < ${config.screening.minDeployScore} → SKIP (below floor)
+- score ${config.screening.minDeployScore}-${config.screening.minDeployScore + 14} → deploy ONLY with strong compensating factor (smart money, KOL, organic >= 80, fee_tvl strong)
 - NEVER claim a deploy happened without actually calling deploy_position
 
 JUDGMENT SIGNALS:

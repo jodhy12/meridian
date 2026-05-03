@@ -7,15 +7,10 @@ export const tools = [
     function: {
       name: "discover_pools",
       description: `Fetch top DLMM pools from the Meteora Pool Discovery API.
-Pools are pre-filtered for safety:
-- No critical warnings on base/quote tokens
-- No high single ownership on base token
-- Base token market cap >= $150k
-- Base token holders >= 100
-- Volume >= $1k (in timeframe)
-- Active TVL >= $10k
-- Fee/Active TVL ratio >= 0.01 (in timeframe)
-- Both tokens organic score >= 60
+Pools are pre-filtered for safety using current screening config (see config object).
+Filters applied: base token critical warnings, mcap floor, holders floor, volume floor,
+TVL range, fee/TVL ratio floor, organic score floor, bot holders cap, swap activity floor.
+All thresholds dynamic — pulled from config.screening at runtime.
 
 Returns condensed pool data: address, name, tokens, bin_step, fee_pct,
 active_tvl, fee_window, volume_window, fee_tvl_ratio, volatility, organic_score,
@@ -31,8 +26,8 @@ Use this as the primary tool for finding new LP opportunities.`,
           },
           timeframe: {
             type: "string",
-            enum: ["1h", "4h", "12h", "24h"],
-            description: "Timeframe for metrics. Use 24h for general screening, 1h for momentum."
+            enum: ["5m", "15m", "30m", "1h", "2h", "4h", "12h", "24h"],
+            description: "Timeframe for metrics. Defaults to config.screening.timeframe."
           },
           category: {
             type: "string",
