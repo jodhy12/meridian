@@ -3,6 +3,19 @@ import { isBlacklisted } from "../token-blacklist.js";
 import { isDevBlocked, getBlockedDevs } from "../dev-blocklist.js";
 import { log } from "../logger.js";
 import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
+import { loadWeights } from "../signal-weights.js";
+
+// Cache evolved weights for the duration of a screening cycle
+let _cachedWeights = null;
+let _cachedWeightsAt = 0;
+function getEvolvedWeights() {
+  const now = Date.now();
+  if (!_cachedWeights || now - _cachedWeightsAt > 60_000) {
+    _cachedWeights = loadWeights()?.weights || {};
+    _cachedWeightsAt = now;
+  }
+  return _cachedWeights;
+}
 
 const DATAPI_JUP = "https://datapi.jup.ag/v1";
 
@@ -459,92 +472,167 @@ function condensePool(p) {
  *
  * Thresholds: ≥60 = deploy, 40-59 = caution, <40 = skip
  */
-function scoreCandidate(pool, smartWalletsPresent = false) {
+export function scoreCandidate(pool, smartWalletsPresent = false) {
   const breakdown = {};
   let score = 0;
 
-  // ── Fee/TVL ratio (35 pts max) ───────────────────────────────
-  // Primary predictor of fee income. Target scaled per timeframe:
-  // 5m=0.02%, 15m=0.05%, 30m=0.4%, 1h=1.0%, 4h=0.8%, 24h=3%
+  // Pull evolved weights from Darwinian system (fee_tvl=1.798, bot_holders=0.54, etc.)
+  // Weights >1 = winning signals (boost), <1 = toxic (penalize harder).
+  // Use sqrt scaling to dampen extreme weights (1.798→1.34, 0.5→0.71) and prevent
+  // any single component from dominating the score.
+  const w = getEvolvedWeights();
+  const wMul = (key, fallback = 1) => {
+    const v = Number(w[key]);
+    if (!Number.isFinite(v) || v <= 0) return fallback;
+    return Math.sqrt(v); // dampen: 1.8→1.34, 0.5→0.71
+  };
+  // Helper: apply weight then clamp to a max (ensures component caps hold)
+  const weighted = (raw, weightKey, max) => {
+    const w = wMul(weightKey);
+    return Math.round(Math.min(max, raw * w));
+  };
+  // Helper for penalties: invert toxic weights (0.5 → 1.5× penalty)
+  const penaltyWeight = (key) => {
+    const v = Number(w[key]);
+    if (!Number.isFinite(v) || v <= 0) return 1;
+    if (v >= 1) return 1; // winning signal — no penalty amplification
+    return 1 + (1 - v); // toxic: 0.5→1.5, 0.7→1.3
+  };
+
+  // ── Fee/TVL ratio (35 pts max, capped at pump-trap level) ─────
+  // Primary predictor of fee income. Target scaled per timeframe.
+  // CAP: feeTvl > 5 = pump trap (post-pump distribution), score plateaus at target * 4.
   const timeframe = config.screening.timeframe || "30m";
   const feeTvlTarget = { "5m": 0.04, "15m": 0.1, "30m": 0.4, "1h": 1.0, "2h": 0.8, "4h": 0.8, "24h": 3.0 }[timeframe] ?? 0.4;
   const feeTvl = Number(pool.fee_active_tvl_ratio || 0);
-  const feePts = Math.min(35, Math.round(feeTvl / feeTvlTarget * 35));
+  // Cap effective ratio at 4× target — anything beyond is pump-trap suspect
+  const effectiveFeeTvl = Math.min(feeTvl, feeTvlTarget * 4);
+  const feeRaw = Math.min(35, effectiveFeeTvl / feeTvlTarget * 35);
+  const feePts = weighted(feeRaw, "fee_tvl_ratio", 35);
   score += feePts;
   breakdown.fee_tvl = `${feeTvl}% → +${feePts} (target ${feeTvlTarget}%)`;
 
-  // ── Organic score (20 pts max, down from 30) ─────────────────
-  // Data: winners avg organic 78.35 vs losers 78.20 — almost no difference.
-  // Still useful to filter bot-inflated volume, but less predictive than expected.
-  // Reduced weight to free up score room for activity signals (swap_count).
+  // ── Pump-trap penalty (0 to -25) ────────────────────────────
+  // Data: MOGMAN -83% (fee_tvl 6.09), Freg -4% (7.9), Rise -4% (8.4), POKE6900 -1.5% (8.2)
+  // Extreme fee_tvl ratios indicate dumping into LP, not organic activity.
+  let pumpTrapPts = 0;
+  if (feeTvl > 8) pumpTrapPts = -25;
+  else if (feeTvl > 6) pumpTrapPts = -15;
+  else if (feeTvl > feeTvlTarget * 5) pumpTrapPts = -8;
+  if (pumpTrapPts) {
+    score += pumpTrapPts;
+    breakdown.pump_trap = `${feeTvl}% → ${pumpTrapPts} (extreme fee_tvl)`;
+  }
+
+  // ── Organic score (20 pts max) ──────────────────────────────
   const organic = Number(pool.organic_score || 0);
-  const organicPts = organic < 50 ? 0 : Math.min(20, Math.round((organic - 50) / 50 * 20));
+  const organicRaw = organic < 50 ? 0 : Math.min(20, (organic - 50) / 50 * 20);
+  const organicPts = weighted(organicRaw, "organic_score", 20);
   score += organicPts;
   breakdown.organic = `${organic} → +${organicPts}`;
 
-  // ── Smart wallets / on-chain signals (10 pts max) ────────────
-  // OKX data often unavailable — treat as bonus when present, not required.
-  // smart_money_buy/kol from OKX clusters (+10), dev_sold_all (+5), both capped at 10.
+  // ── Smart wallets / on-chain signals (15 pts max, STACKED) ──
+  // FIX: previously used Math.max which prevented stacking. Now both contribute.
   const tags = pool.okx_tags || [];
   const devSoldAll = tags.includes("dev_sold_all") || pool.dev_sold_all;
   const smartMoneyBuy = tags.includes("smart_money_buy") || pool.smart_money_buy;
   const kolPresent = pool.kol_in_clusters;
-  const swPts = smartWalletsPresent ? 10 : 0;
-  const onChainPts = Math.min(10, (devSoldAll ? 3 : 0) + (smartMoneyBuy ? 5 : 0) + (kolPresent ? 5 : 0));
-  const signalPts = Math.max(swPts, onChainPts); // don't double-count
+  const swPts = smartWalletsPresent ? weighted(8, "smart_wallets_present", 8) : 0;
+  const onChainPts = (devSoldAll ? 2 : 0) + (smartMoneyBuy ? 4 : 0) + (kolPresent ? 4 : 0);
+  const signalPts = Math.min(15, swPts + onChainPts); // STACKED, capped at 15
   score += signalPts;
   breakdown.smart_signals = `sw=${smartWalletsPresent} okx_smart=${smartMoneyBuy} kol=${kolPresent} dev_sold=${devSoldAll} → +${signalPts}`;
 
-  // ── Fee/TVL above target bonus (5 pts) ───────────────────────
-  // Replaces dead OKX weight: reward pools generating 2× the timeframe target.
-  // These pools have proven demand and can sustain fees through IL.
-  const feeTvlBonus = feeTvl >= feeTvlTarget * 2 ? 5 : 0;
-  score += feeTvlBonus;
-  if (feeTvlBonus) breakdown.fee_tvl_bonus = `${feeTvl}% ≥ ${(feeTvlTarget * 2).toFixed(1)}% (2× target) → +5`;
-
-  // ── Token age bonus (5 pts max) ──────────────────────────────
-  // Mature tokens are more stable. <48h already hard-filtered.
+  // ── Token age (gradual scaling, 0-7 pts) ─────────────────────
+  // FIX: was binary jumps (0/3/5). Now gradual: log-scale up to 30d.
+  // Weighted by evolved token_age weight (currently 1.798 — strong winner signal).
   const ageHours = Number(pool.token_age_hours || 0);
-  const agePts = ageHours >= 720 ? 5 : ageHours >= 168 ? 3 : 0; // 30d=5, 7d=3
+  let ageRaw = 0;
+  if (ageHours >= 720) ageRaw = 7;        // 30d+
+  else if (ageHours >= 336) ageRaw = 6;   // 14d
+  else if (ageHours >= 168) ageRaw = 5;   // 7d
+  else if (ageHours >= 72) ageRaw = 3;    // 3d
+  else if (ageHours >= 24) ageRaw = 2;    // 1d
+  else if (ageHours >= 12) ageRaw = 1;    // 12h
+  const agePts = weighted(ageRaw, "token_age_hours", 7);
   score += agePts;
   breakdown.token_age = `${Math.round(ageHours / 24)}d → +${agePts}`;
 
-  // ── Volatility bonus/penalty (+5 to -35) ─────────────────────
-  // Data: winners avg vol 3.54 vs losers 3.99 — sweet spot is 2-4, not ≤3.
-  // vol<2 = too quiet (little price action = fewer trades = fewer fees).
-  // vol 2-4 = sweet spot: enough activity for fees, not so much IL kills gains.
-  // vol>5 = danger: OOR too fast, IL > fees. Data: vol>5 avg -4% PnL.
+  // ── Volatility (penalized harder via toxic weight 0.513) ─────
+  // Sweet spot 2-4. Toxic weight amplifies penalty for high vol.
   const vol = Number(pool.volatility || 0);
-  const volPts = vol < 2 ? 2 : vol <= 4 ? 5 : vol <= 5 ? 0 : vol <= 7 ? -25 : -35;
+  const volRaw = vol < 2 ? 2 : vol <= 4 ? 5 : vol <= 5 ? 0 : vol <= 7 ? -25 : -35;
+  const volPts = volRaw >= 0
+    ? weighted(volRaw, "volatility", 5)
+    : Math.round(volRaw * penaltyWeight("volatility"));
   score += volPts;
   breakdown.volatility = `${vol} → ${volPts >= 0 ? "+" : ""}${volPts}`;
 
   // ── Price momentum penalty (0 to -25) ───────────────────────
-  // Already pumped = exit liquidity. Dumping = distribution phase.
   const priceChange = Number(pool.price_change_pct || 0);
   let momentumPts = 0;
-  if (priceChange > 50) momentumPts = -25;        // extreme pump — definitely exit liq
-  else if (priceChange > 20) momentumPts = -15;    // pumped — likely exit liq
-  else if (priceChange > 10) momentumPts = -10;    // pump zone — PIXEL pattern risk (high fee_tvl but already pumped)
-  else if (priceChange < -10) momentumPts = -25;   // heavy dump — distribution
-  else if (priceChange < -5) momentumPts = -10;    // weak — caution
+  if (priceChange > 50) momentumPts = -25;
+  else if (priceChange > 20) momentumPts = -15;
+  else if (priceChange > 10) momentumPts = -10;
+  else if (priceChange < -10) momentumPts = -25;
+  else if (priceChange < -5) momentumPts = -10;
   score += momentumPts;
-  breakdown.price_1h = `${priceChange}% → ${momentumPts}`;
+  if (momentumPts) breakdown.price_1h = `${priceChange}% → ${momentumPts}`;
 
   // ── Holder concentration penalty (0 to -20) ──────────────────
-  // Concentrated supply = coordinated dump risk.
   const top10 = Number(pool.top10_pct || 0);
-  const top10Pts = top10 > 70 ? -20 : top10 > 55 ? -10 : 0;
+  const top10RawPts = top10 > 70 ? -20 : top10 > 55 ? -10 : top10 > 45 ? -5 : 0;
+  // top10 weight is high (1.158 — winning negative signal) — stronger penalty
+  const top10Pts = top10RawPts < 0 ? Math.round(top10RawPts * penaltyWeight("top10_holders_pct")) : 0;
   score += top10Pts;
-  breakdown.top10_pct = `${top10}% → ${top10Pts}`;
+  if (top10Pts) breakdown.top10_pct = `${top10}% → ${top10Pts}`;
+
+  // ── NEW: Bot holders penalty (0 to -20) ──────────────────────
+  // Toxic signal (weight 0.54). MOGMAN had 32.3% — score-level catch.
+  const botPct = Number(pool.bot_holders_pct ?? 0);
+  let botRawPts = 0;
+  if (botPct > 40) botRawPts = -20;
+  else if (botPct > 30) botRawPts = -12;
+  else if (botPct > 20) botRawPts = -5;
+  // Invert toxic weight: 0.54 → 1.46× penalty
+  const botPts = botRawPts < 0 ? Math.round(botRawPts * penaltyWeight("bot_holders_pct")) : 0;
+  score += botPts;
+  if (botPts) breakdown.bot_holders = `${botPct}% → ${botPts}`;
+
+  // ── NEW: Holder count bonus/penalty (-10 to +5) ──────────────
+  // Sparse holders = rug-prone. Many holders = distributed risk.
+  const holderCount = Number(pool.holder_count ?? 0);
+  let holderPts = 0;
+  if (holderCount > 0) {
+    if (holderCount >= 1000) holderPts = 5;
+    else if (holderCount >= 500) holderPts = 3;
+    else if (holderCount >= 200) holderPts = 0;
+    else if (holderCount >= 100) holderPts = -5;
+    else holderPts = -10;
+    holderPts = holderPts >= 0
+      ? weighted(holderPts, "holder_count", 5)
+      : Math.round(holderPts * penaltyWeight("holder_count"));
+  }
+  score += holderPts;
+  if (holderPts) breakdown.holders = `${holderCount} → ${holderPts >= 0 ? "+" : ""}${holderPts}`;
+
+  // ── NEW: Volume spike penalty (0 to -15) ─────────────────────
+  // Boosted weight (1.158) — strong predictor when paired with caution.
+  // Spikes >4× = often pump-and-dump in progress.
+  const volumeSpike = Number(pool.volume_spike ?? pool._tech_snapshot?.volume_spike ?? 0);
+  let spikePts = 0;
+  if (volumeSpike >= 5) spikePts = -15;
+  else if (volumeSpike >= 4) spikePts = -10;
+  else if (volumeSpike >= 3) spikePts = -5;
+  score += spikePts;
+  if (spikePts) breakdown.volume_spike = `${volumeSpike}× → ${spikePts}`;
 
   // ── Swap activity bonus (10 pts max) ────────────────────────
-  // Real-time trade activity is the best predictor of fee generation.
-  // Data: 65% of pools with good fee/TVL but low activity produce zero fees.
-  const swaps   = Number(pool.swap_count ?? 0);
+  const swaps = Number(pool.swap_count ?? 0);
   const traders = Number(pool.unique_traders ?? 0);
-  const activityPts = (swaps >= 50 ? 7 : swaps >= 20 ? 5 : swaps >= 10 ? 3 : 0)
+  const activityRaw = (swaps >= 50 ? 7 : swaps >= 20 ? 5 : swaps >= 10 ? 3 : 0)
                     + (traders >= 20 ? 5 : traders >= 10 ? 3 : traders >= 5 ? 1 : 0);
+  const activityPts = weighted(activityRaw, "swap_count", 12);
   score += activityPts;
   breakdown.activity = `swaps=${swaps} traders=${traders} → +${activityPts}`;
 
