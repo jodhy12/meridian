@@ -28,12 +28,10 @@ export function buildSystemPrompt(agentType, portfolio, positions, stateSummary 
       trailingTriggerPct: config.management.trailingTriggerPct,
       trailingDropPct: config.management.trailingDropPct,
     });
+    // STATIC PREFIX (cacheable) → DYNAMIC SUFFIX
     return `You are an autonomous DLMM LP agent on Meteora, Solana. Role: MANAGER
 
 This is a mechanical rule-application task. All position data is pre-loaded. Apply the close/claim rules directly and output the report. No extended analysis or deliberation required.
-
-Portfolio: ${portfolioCompact}
-Management Config: ${mgmtConfig}
 
 BEHAVIORAL CORE:
 1. PATIENCE IS PROFIT: Avoid closing positions for tiny gains/losses.
@@ -42,32 +40,20 @@ BEHAVIORAL CORE:
 4. AUTO-CLAIM: If a position's unclaimed_fees >= ${config.management.minClaimAmount} ${config.management.solMode ? "SOL" : "USD"}, call claim_fees immediately — do NOT wait for close. This locks in fees before token price dumps. Do not close the position after claiming unless another exit rule triggers.
 5. TECHNICAL EXIT: Each management cycle, call get_technical_signals with the position's pool address (pool_address field) and timeframe "15m". If exit_signal=true, close the position immediately — triggered by RSI(2)>=90+BB breach, RSI(2)>=90+MACD green, or VWAP distance >15%. This overrides STAY decisions.
 
-${lessons ? `LESSONS LEARNED:\n${lessons}\n` : ""}RECENT DECISIONS:\n${getDecisionSummary(4)}
+═══ DYNAMIC STATE (per call) ═══
+Portfolio: ${portfolioCompact}
+Management Config: ${mgmtConfig}
+
+${lessons ? `LESSONS LEARNED:\n${lessons}\n\n` : ""}RECENT DECISIONS:\n${getDecisionSummary(4)}
 
 Timestamp: ${new Date().toISOString()}
 `;
   }
 
+  // STATIC PREFIX (cacheable) — content here should rarely change between calls.
+  // OpenRouter/DeepSeek will cache this prefix automatically. Keep dynamic content at END.
   let basePrompt = `You are an autonomous DLMM LP (Liquidity Provider) agent operating on Meteora, Solana.
 Role: ${agentType || "GENERAL"}
-
-═══════════════════════════════════════════
- CURRENT STATE
-═══════════════════════════════════════════
-
-Portfolio: ${JSON.stringify(portfolio)}
-Open Positions: ${JSON.stringify(positions)}
-Memory: ${JSON.stringify(stateSummary)}
-Performance: ${perfSummary ? JSON.stringify(perfSummary) : "No closed positions yet"}
-Config: ${JSON.stringify({
-  screening: { timeframe: config.screening.timeframe, minFeeActiveTvlRatio: config.screening.minFeeActiveTvlRatio, maxVolatility: config.screening.maxVolatility, minOrganic: config.screening.minOrganic, minTvl: config.screening.minTvl, maxTvl: config.screening.maxTvl },
-  management: { stopLossPct: config.management.stopLossPct, takeProfitFeePct: config.management.takeProfitFeePct, outOfRangeWaitMinutes: config.management.outOfRangeWaitMinutes, minFeePerTvl24h: config.management.minFeePerTvl24h, deployAmountSol: config.management.deployAmountSol },
-})}
-
-${lessons ? `═══════════════════════════════════════════
- LESSONS LEARNED
-═══════════════════════════════════════════
-${lessons}` : ""}
 
 ═══════════════════════════════════════════
  BEHAVIORAL CORE
@@ -106,9 +92,26 @@ TOKEN TAGS (from OKX advanced-info):
 
 IMPORTANT: fee_active_tvl_ratio values are ALREADY in percentage form. 0.29 = 0.29%. Do NOT multiply by 100. A value of 1.0 = 1.0%, a value of 22 = 22%. Never convert.
 
-Current screening timeframe: ${config.screening.timeframe} — interpret all metrics relative to this window.
+═══════════════════════════════════════════
+ DYNAMIC STATE (changes per call — not cached)
+═══════════════════════════════════════════
 
-`;
+Current screening timeframe: ${config.screening.timeframe}
+Portfolio: ${JSON.stringify(portfolio)}
+Open Positions: ${JSON.stringify(positions)}
+Memory: ${JSON.stringify(stateSummary)}
+Performance: ${perfSummary ? JSON.stringify(perfSummary) : "No closed positions yet"}
+Config: ${JSON.stringify({
+  screening: { timeframe: config.screening.timeframe, minFeeActiveTvlRatio: config.screening.minFeeActiveTvlRatio, maxVolatility: config.screening.maxVolatility, minOrganic: config.screening.minOrganic, minTvl: config.screening.minTvl, maxTvl: config.screening.maxTvl },
+  management: { stopLossPct: config.management.stopLossPct, takeProfitFeePct: config.management.takeProfitFeePct, outOfRangeWaitMinutes: config.management.outOfRangeWaitMinutes, minFeePerTvl24h: config.management.minFeePerTvl24h, deployAmountSol: config.management.deployAmountSol },
+})}
+
+${lessons ? `═══════════════════════════════════════════
+ LESSONS LEARNED
+═══════════════════════════════════════════
+${lessons}
+
+` : ""}`;
 
   if (agentType === "SCREENER") {
     return `You are an autonomous DLMM LP agent on Meteora, Solana. Role: SCREENER

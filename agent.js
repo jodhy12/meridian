@@ -249,6 +249,21 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
         log("error", `Bad API response: ${JSON.stringify(response).slice(0, 200)}`);
         throw new Error(`API returned no choices: ${response.error?.message || JSON.stringify(response)}`);
       }
+
+      // Track token usage + cache hit rate (DeepSeek/OpenRouter caching)
+      if (response.usage) {
+        const u = response.usage;
+        const cachedIn = u.prompt_cache_hit_tokens ?? u.prompt_tokens_details?.cached_tokens ?? 0;
+        const totalIn = u.prompt_tokens ?? 0;
+        const out = u.completion_tokens ?? 0;
+        const cacheRate = totalIn > 0 ? Math.round((cachedIn / totalIn) * 100) : 0;
+        if (cachedIn > 0) {
+          log("agent_usage", `[Step ${step}] in=${totalIn} (cached=${cachedIn}, ${cacheRate}%) out=${out}`);
+        } else {
+          log("agent_usage", `[Step ${step}] in=${totalIn} out=${out}`);
+        }
+      }
+
       const msg = response.choices[0].message;
       // Repair malformed tool call JSON before pushing to history —
       // the API rejects the next request if history contains invalid JSON args
