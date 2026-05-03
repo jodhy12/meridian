@@ -209,7 +209,7 @@ const actualBaseFee =
 - `getLessonsForPrompt({ agentType })` — injects relevant lessons into system prompt
 - `evolveThresholds()` — adjusts screening thresholds based on winners vs losers
 - Performance recorded via `recordPerformance()` called from executor.js after `close_position`
-- **Known issue**: `evolveThresholds()` references `maxVolatility` and `minFeeTvlRatio` but config.js uses `minFeeActiveTvlRatio` and has no `maxVolatility` key — the evolution of these keys is a no-op
+- Evolves: `minFeeActiveTvlRatio`, `minVolume`, `minOrganic`, `maxVolatility`, `minVolatility`, `minHolders`, `minMcap` — all persist to user-config.json and apply to live config (verified working)
 
 ---
 

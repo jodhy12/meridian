@@ -31,6 +31,7 @@ import {
 import { recordPerformance } from "../lessons.js";
 import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
 import { normalizeMint } from "./wallet.js";
+import { addToBlacklist } from "../token-blacklist.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
 // @meteora-ag/dlmm → @coral-xyz/anchor uses CJS directory imports
@@ -962,6 +963,25 @@ export async function closePosition({ position_address, reason }) {
         close_reason: reason || "agent decision",
         signal_snapshot: tracked.signal_snapshot || null,
       });
+
+      // Auto-blacklist token after catastrophic loss (rug protection)
+      // Threshold: -50% PnL = clear rug pattern
+      if (pnlPct <= -50) {
+        try {
+          const poolObj = await getPool(poolAddress);
+          const baseMint = poolObj?.lbPair?.tokenXMint?.toString();
+          if (baseMint) {
+            addToBlacklist({
+              mint: baseMint,
+              symbol: tracked.pool_name?.split("-")[0] || "UNKNOWN",
+              reason: `Auto: catastrophic loss ${pnlPct.toFixed(1)}% in ${minutesHeld}m`,
+            });
+            log("close", `Auto-blacklisted ${tracked.pool_name} (rug: ${pnlPct.toFixed(1)}%)`);
+          }
+        } catch (e) {
+          log("close_warn", `Auto-blacklist failed: ${e.message}`);
+        }
+      }
 
       return {
         success: true,

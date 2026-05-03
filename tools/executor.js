@@ -339,6 +339,13 @@ export async function executeTool(name, args) {
 
     args.signal_snapshot = snap;
 
+    // 3b. Backfill top-level args from snap so trackPosition gets full data
+    //     (state.json stores volatility for OOR vol-scaling, fee_tvl/organic for lessons)
+    if (args.volatility == null && snap.volatility != null) args.volatility = snap.volatility;
+    if (args.fee_tvl_ratio == null && snap.fee_tvl_ratio != null) args.fee_tvl_ratio = snap.fee_tvl_ratio;
+    if (args.organic_score == null && snap.organic_score != null) args.organic_score = snap.organic_score;
+    if (args.bin_step == null && snap.bin_step != null) args.bin_step = snap.bin_step;
+
     // 4. Auto-fill critical deploy params if LLM didn't provide them
     //    This prevents failed deploys from unreliable models (minimax, etc.)
     if (!args.amount_y && !args.amount_sol) {

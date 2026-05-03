@@ -84,14 +84,17 @@ ${lessons}` : ""}
 TIMEFRAME SCALING — all pool metrics (volume, fee_active_tvl_ratio, fee_24h) are measured over the active timeframe window.
 The same pool will show much smaller numbers on 5m vs 24h. Adjust your expectations accordingly:
 
-  timeframe │ fee_active_tvl_ratio │ volume (good pool)
-  ──────────┼─────────────────────┼────────────────────
-  5m        │ ≥ 0.02% = decent    │ ≥ $500
-  15m       │ ≥ 0.05% = decent    │ ≥ $2k
-  1h        │ ≥ 0.2%  = decent    │ ≥ $10k
-  2h        │ ≥ 0.4%  = decent    │ ≥ $20k
-  4h        │ ≥ 0.8%  = decent    │ ≥ $40k
-  24h       │ ≥ 3%    = decent    │ ≥ $100k
+  timeframe │ fee_active_tvl_ratio (decent / scoring target) │ volume (good pool)
+  ──────────┼───────────────────────────────────────────────┼────────────────────
+  5m        │ ≥ 0.02% / target 0.04%                        │ ≥ $500
+  15m       │ ≥ 0.05% / target 0.1%                         │ ≥ $2k
+  1h        │ ≥ 0.2%  / target 1.0%                         │ ≥ $10k
+  2h        │ ≥ 0.4%  / target 0.8%                         │ ≥ $20k
+  4h        │ ≥ 0.8%  / target 0.8%                         │ ≥ $40k
+  24h       │ ≥ 3%    / target 3.0%                         │ ≥ $100k
+
+NOTE: "decent" = above filter floor. "Target" = full scoring points. Pools at target tend to win more.
+WARNING: fee_active_tvl_ratio > 6% on 1h is PUMP TRAP signal (post-pump distribution, high rug risk).
 
 TOKEN TAGS (from OKX advanced-info):
 - dev_sold_all = BULLISH — dev has no tokens left to dump on you

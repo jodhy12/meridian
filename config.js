@@ -78,9 +78,9 @@ export const config = {
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
     minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 45, // minutes before low yield can trigger close (data: 87% positions $0 fees)
     maxILPct:              u.maxILPct              ?? null,  // max IL% (position value drop excl. fees) before force close, e.g. -5
-    maxHoldNegativeMinutes: u.maxHoldNegativeMinutes ?? null, // force close negative PnL positions after this many minutes
+    maxHoldNegativeMinutes: u.maxHoldNegativeMinutes ?? 90,  // force close negative PnL positions after this many minutes (default: 90)
     maxHoldFlatMinutes:    u.maxHoldFlatMinutes    ?? 120,  // force close if held > X min and peak < 1% (data: 74% positions flat, avg hold 77m)
-    maxTrailingDurationMin: u.maxTrailingDurationMin ?? null, // max minutes trailing TP can run before force close
+    maxTrailingDurationMin: u.maxTrailingDurationMin ?? 180, // max minutes trailing TP can run (data: BURNIE 393m -7.73%, BabyTrump 346m -1.43%)
     tpCheckIntervalMin:    u.tpCheckIntervalMin    ?? 1,    // management cycle interval when position is in TP/danger zone (faster than normal)
     dangerZonePct:         u.dangerZonePct         ?? 2,    // trigger fast polling when PnL drops below -X%
     tokenCooldownHours:    u.tokenCooldownHours    ?? 12,   // block re-deploy into same token after loss for X hours

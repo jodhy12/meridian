@@ -439,12 +439,18 @@ export async function runManagementCycle({ silent = false } = {}) {
         actionMap.set(p.position, { action: "CLOSE", rule: 3, reason: "pumped far above range" });
         continue;
       }
-      // Rule 4: stale above range
+      // Rule 4: stale above range — wait time scales DOWN with volatility (memecoin recovery is unlikely)
       if (p.active_bin != null && p.upper_bin != null &&
-          p.active_bin > p.upper_bin &&
-          (p.minutes_out_of_range ?? 0) >= config.management.outOfRangeWaitMinutes) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 4, reason: "OOR above" });
-        continue;
+          p.active_bin > p.upper_bin) {
+        const baseWait = config.management.outOfRangeWaitMinutes;
+        const vol = tracked?.volatility ?? tracked?.signal_snapshot?.volatility ?? 0;
+        const oorWait = vol >= 4 ? Math.max(8, Math.round(baseWait * 0.4))
+                      : vol >= 2 ? Math.max(15, Math.round(baseWait * 0.7))
+                      : baseWait;
+        if ((p.minutes_out_of_range ?? 0) >= oorWait) {
+          actionMap.set(p.position, { action: "CLOSE", rule: 4, reason: `OOR above (vol-scaled wait ${oorWait}m)` });
+          continue;
+        }
       }
       // Rule 4b: dumped far below range (symmetric to Rule 3)
       if (p.active_bin != null && p.lower_bin != null &&
@@ -452,12 +458,18 @@ export async function runManagementCycle({ silent = false } = {}) {
         actionMap.set(p.position, { action: "CLOSE", rule: "4b", reason: "dumped far below range" });
         continue;
       }
-      // Rule 4c: stale below range — price ranging below, waited long enough
+      // Rule 4c: stale below range — same vol-scaling as 4
       if (p.active_bin != null && p.lower_bin != null &&
-          p.active_bin < p.lower_bin &&
-          (p.minutes_out_of_range ?? 0) >= config.management.outOfRangeWaitMinutes) {
-        actionMap.set(p.position, { action: "CLOSE", rule: "4c", reason: "OOR below" });
-        continue;
+          p.active_bin < p.lower_bin) {
+        const baseWait = config.management.outOfRangeWaitMinutes;
+        const vol = tracked?.volatility ?? tracked?.signal_snapshot?.volatility ?? 0;
+        const oorWait = vol >= 4 ? Math.max(8, Math.round(baseWait * 0.4))
+                      : vol >= 2 ? Math.max(15, Math.round(baseWait * 0.7))
+                      : baseWait;
+        if ((p.minutes_out_of_range ?? 0) >= oorWait) {
+          actionMap.set(p.position, { action: "CLOSE", rule: "4c", reason: `OOR below (vol-scaled wait ${oorWait}m)` });
+          continue;
+        }
       }
       // Rule 5: fee yield too low AND position is losing (avoid gas-drain closes on profitable positions)
       // A profitable in-range position should keep running toward TP — closing it at 0.1% pnl costs more in gas than it gains.
@@ -476,13 +488,14 @@ export async function runManagementCycle({ silent = false } = {}) {
         actionMap.set(p.position, { action: "CLOSE", rule: 6, reason: "stale — IL > fees" });
         continue;
       }
-      // Rule 7: "nyayur" check — in range but generating zero fees after 10 min → dead pool
+      // Rule 7: "nyayur" check — in range but generating ~zero fees after 10 min → dead pool
       // Data: 6 dead pools avg held 18m before detection — catch earlier
+      // Use threshold (not strict ===0) to catch near-dead pools with dust fees
       if (p.in_range &&
           (p.age_minutes ?? 0) >= 10 &&
-          (p.fee_per_tvl_24h ?? -1) === 0 &&
+          (p.fee_per_tvl_24h ?? -1) <= 0.01 &&
           (p.unclaimed_fees_usd ?? 0) < 0.001) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 7, reason: "no fees after 10 min — dead pool" });
+        actionMap.set(p.position, { action: "CLOSE", rule: 7, reason: "near-zero fees after 10 min — dead pool" });
         continue;
       }
       // Rule 8: max hold for negative PnL — data: 5 positions held >120m while negative = -14.10% total loss
