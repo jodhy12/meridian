@@ -776,10 +776,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
         if (!raw?.error) tech = raw;
       } catch { /**/ }
 
-      // 2e. Pre-compute bins (centered 50/50, ATR-adjusted if available)
-      // Data from 72 positions: bins 41-60 = best bucket, 81+ = dust
+      // 2e. Pre-compute bins — narrow range matched to aggressive stop loss strategy
+      // Concentrated liquidity = higher fee per swap, OOR exits faster (which we want)
+      // Formula: 15 + (vol/5) × 15, clamped [15, 30] — range ~14-24% with bin_step 80
       const vol = Number(pool.volatility || 3);
-      const totalBins = Math.min(60, Math.max(30, Math.round(30 + (vol / 5) * 30)));
+      const totalBins = Math.min(30, Math.max(15, Math.round(15 + (vol / 5) * 15)));
       const atrBins = tech?.suggested_bins_below ?? null;
       pool._bins_below = atrBins ?? Math.round(totalBins * 0.5);
       pool._bins_above = atrBins ?? Math.round(totalBins * 0.5);

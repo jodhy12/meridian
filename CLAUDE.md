@@ -133,16 +133,17 @@ Before `deploy_position` executes:
 
 ## bins_below Calculation (SCREENER)
 
-Linear formula based on pool volatility (set in screener prompt, `index.js`):
+Linear formula based on pool volatility — narrow range matched to aggressive stop loss:
 
 ```
-bins_below = round(30 + (volatility / 5) * 30), clamped to [30, 60]
+bins_below = round(15 + (volatility / 5) * 15), clamped to [15, 30]
 ```
 
-- Low volatility (0) → 30 bins
-- High volatility (5+) → 60 bins
-- Any value in between is valid (continuous, not tiered)
-- Data: bins 41–60 = best PnL bucket (+0.39%), 81+ = dust (+0.03%)
+- Low volatility (0) → 15 bins (~12% range with bin_step 80)
+- High volatility (5+) → 30 bins (~24% range with bin_step 80)
+- Continuous, not tiered
+- Concentrated liquidity strategy: higher fee per swap, OOR exits faster
+- Matched to stopLossPct: -7% so exits happen before liquidity wasted in deep bins
 
 ---
 

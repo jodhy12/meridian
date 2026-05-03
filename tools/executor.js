@@ -361,11 +361,13 @@ export async function executeTool(name, args) {
 
     if (!args.bins_below || args.bins_below <= 0) {
       const vol = snap.volatility ?? args.volatility ?? 3;
-      args.bins_below = Math.round(Math.min(Math.max(30 + (vol / 5) * 30, 30), 60));
+      // Narrow bins matched to aggressive -7% stop loss strategy
+      args.bins_below = Math.round(Math.min(Math.max(15 + (vol / 5) * 15, 15), 30));
       log("executor", `Auto-filled bins_below=${args.bins_below} (volatility: ${vol})`);
     }
     if (!args.bins_above || args.bins_above <= 0) {
-      args.bins_above = Math.max(12, Math.round(args.bins_below * 0.2));
+      // Match bins_above proportionally — narrower bins_below means narrower bins_above too
+      args.bins_above = Math.max(6, Math.round(args.bins_below * 0.2));
       log("executor", `Auto-filled bins_above=${args.bins_above}`);
     }
   }

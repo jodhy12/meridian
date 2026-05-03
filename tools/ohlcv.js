@@ -107,9 +107,9 @@ function atr(bars, period = 14) {
   }
   const currentPrice = bars[bars.length - 1].close;
   const atrPct = (atrVal / currentPrice) * 100;
-  // Suggest bins_below: scale ATR% linearly → [30, 60]
-  // Data from 72 positions: bins 41-60 = best bucket (+0.39% avg), 81+ = dust (+0.03%)
-  const suggestedBins = Math.round(Math.min(60, Math.max(30, 30 + (atrPct / 10) * 30)));
+  // Suggest bins_below: scale ATR% linearly → [15, 30] (narrow for aggressive strategy)
+  // Concentrated liquidity = higher fees, faster OOR exit matched to -7% stop loss
+  const suggestedBins = Math.round(Math.min(30, Math.max(15, 15 + (atrPct / 10) * 15)));
   return {
     value:          Math.round(atrVal * 1e8) / 1e8,
     pct:            Math.round(atrPct * 100) / 100,
