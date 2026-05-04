@@ -207,19 +207,30 @@ const toolMap = {
     const blocked = [];
 
     // LOCKED KEYS — LLM is not allowed to modify these (user-managed only)
-    // Reason: LLM keeps oscillating these values based on misread lessons,
-    // causing config thrash and unstable strategy.
+    // Strategy must remain STABLE. LLM should pick from candidates, not change rules.
     const LOCKED_KEYS = new Set([
-      "minFeeActiveTvlRatio",  // user manually tunes per timeframe
-      "stopLossPct",           // strategy-critical, user-decided
-      "takeProfitFeePct",      // strategy-critical, user-decided
-      "maxHoldNegativeMinutes",// strategy-critical, user-decided
-      "minDeployScore",        // strategy-critical, user-decided
-      "maxBotHoldersPct",      // safety-critical, user-decided
-      "deployAmountSol",       // capital management, user-decided
-      "maxPositions",          // capital management, user-decided
-      "minSolToOpen",          // capital management, user-decided
-      "timeframe",             // strategy-critical, user-decided
+      // Risk / strategy core
+      "stopLossPct", "takeProfitFeePct", "maxILPct",
+      "maxHoldNegativeMinutes", "maxHoldFlatMinutes",
+      "trailingTriggerPct", "trailingDropPct", "maxTrailingDurationMin",
+      "minDeployScore", "timeframe",
+      // Capital management
+      "deployAmountSol", "maxPositions", "minSolToOpen",
+      "gasReserve", "maxDeployAmount", "positionSizePct",
+      // Screening filters (all user-tuned per market regime)
+      "minFeeActiveTvlRatio", "minVolume", "minOrganic", "minQuoteOrganic",
+      "minHolders", "minMcap", "maxMcap",
+      "minTvl", "maxTvl",
+      "minBinStep", "maxBinStep",
+      "minVolatility", "maxVolatility",
+      "minTokenFeesSol", "minTokenAgeHours", "maxTokenAgeHours",
+      "minSwapCount", "minUniqueTraders",
+      "maxBotHoldersPct", "maxTop10Pct", "maxBundlePct",
+      "qualityMinOrganic", "qualityMinHolders", "qualityMinFeeRatio", "qualityTopN",
+      "athFilterPct",
+      // Operational thresholds
+      "minClaimAmount", "minFeePerTvl24h",
+      "outOfRangeWaitMinutes", "outOfRangeBinsToClose",
     ]);
 
     // Build case-insensitive lookup
