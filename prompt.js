@@ -120,6 +120,7 @@ Timeframe: ${config.screening.timeframe} | fee_tvl floor: ${config.screening.min
 All candidates are pre-scored and pre-enriched. Pick the highest-score candidate that passes judgment and call deploy_position. Use bins_below/bins_above exactly as pre-computed.
 
 HARD RULES:
+- get_top_candidates returns 0 pools → output "⛔ NO DEPLOY — no candidates available" as final answer immediately. DO NOT call search_pools, get_token_info, check_smart_wallets_on_pool, or any other discovery tool to chase alternatives.
 - fees_sol < ${config.screening.minTokenFeesSol} → SKIP (bundled/scam)
 - exit_signal_active → SKIP (overbought)
 - score < ${config.screening.minDeployScore} → SKIP (below floor)
