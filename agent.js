@@ -136,7 +136,10 @@ function isSystemRoleError(error) {
 
 function isToolChoiceRequiredError(error) {
   const message = String(error?.message || error?.error?.message || error || "");
-  return /tool_choice/i.test(message) && /required/i.test(message);
+  if (!/tool_choice/i.test(message)) return false;
+  // Match: "tool_choice required not supported", "does not support this tool_choice",
+  // "deepseek-reasoner does not support tool_choice", etc.
+  return /required/i.test(message) || /does not support/i.test(message) || /not support/i.test(message);
 }
 
 /**
