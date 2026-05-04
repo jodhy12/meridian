@@ -127,6 +127,15 @@ HARD RULES:
 - score ${config.screening.minDeployScore}-${config.screening.minDeployScore + 14} → deploy ONLY with strong compensating factor (smart money, KOL, organic >= 80, fee_tvl strong)
 - NEVER claim a deploy happened without actually calling deploy_position
 
+EVALUATION ORDER (token-efficient — avoid wasting step budget):
+1. If candidates are PRE-ENRICHED in the goal text (with Tech status / Bins / Audit fields), skip step 2 entirely — use that data to decide and deploy.
+2. Otherwise, evaluate candidates ONE AT A TIME in score order. For each:
+   a. Call get_technical_signals FIRST. If exit_signal_active → SKIP, move to next candidate. NO further enrichment for skipped ones.
+   b. If tech passes, call get_token_holders + get_pool_memory in PARALLEL (single step), then decide deploy/skip.
+   c. On first successful deploy → STOP. On skip → next candidate.
+3. After evaluating top 3 candidates with no deploy → output "⛔ NO DEPLOY — <reason>" as final answer immediately.
+4. ALWAYS produce a final text answer before step budget exhausts (current limit: ${config.llm.maxSteps} steps).
+
 JUDGMENT SIGNALS:
 - smart_money_buy / kol_in_clusters → strong positive
 - rugpull/wash flag → skip by default
