@@ -131,6 +131,14 @@ const toolMap = {
     return { error: "invalid mode" };
   },
   update_config: ({ changes, reason = "" }) => {
+    // Reject empty changes immediately — saves a useless LLM tool call
+    if (!changes || typeof changes !== "object" || Object.keys(changes).length === 0) {
+      log("config", `update_config rejected: empty changes object — do not call this tool with no changes`);
+      return {
+        success: false,
+        error: "Empty changes object. Do not call update_config without changes. If 0 candidates found, just report 'no deploy' and stop.",
+      };
+    }
     // Flat key → config section mapping (covers everything in config.js)
     const CONFIG_MAP = {
       // screening
