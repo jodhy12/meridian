@@ -196,6 +196,23 @@ const toolMap = {
 
     const applied = {};
     const unknown = [];
+    const blocked = [];
+
+    // LOCKED KEYS — LLM is not allowed to modify these (user-managed only)
+    // Reason: LLM keeps oscillating these values based on misread lessons,
+    // causing config thrash and unstable strategy.
+    const LOCKED_KEYS = new Set([
+      "minFeeActiveTvlRatio",  // user manually tunes per timeframe
+      "stopLossPct",           // strategy-critical, user-decided
+      "takeProfitFeePct",      // strategy-critical, user-decided
+      "maxHoldNegativeMinutes",// strategy-critical, user-decided
+      "minDeployScore",        // strategy-critical, user-decided
+      "maxBotHoldersPct",      // safety-critical, user-decided
+      "deployAmountSol",       // capital management, user-decided
+      "maxPositions",          // capital management, user-decided
+      "minSolToOpen",          // capital management, user-decided
+      "timeframe",             // strategy-critical, user-decided
+    ]);
 
     // Build case-insensitive lookup
     const CONFIG_MAP_LOWER = Object.fromEntries(
@@ -206,6 +223,12 @@ const toolMap = {
     for (const [key, val] of Object.entries(changes)) {
       const match = CONFIG_MAP[key] ? [key, CONFIG_MAP[key]] : CONFIG_MAP_LOWER[key.toLowerCase()];
       if (!match) { unknown.push(key); continue; }
+      // Block LLM from modifying user-managed strategy keys
+      if (LOCKED_KEYS.has(match[0])) {
+        log("config", `update_config BLOCKED: ${match[0]} is user-locked (cannot be modified by LLM)`);
+        blocked.push(match[0]);
+        continue;
+      }
       // Validate model IDs — must contain "/" (e.g. "minimax/minimax-m2.5")
       if (MODEL_KEYS.has(match[0]) && (typeof val !== "string" || !val.includes("/"))) {
         log("config", `update_config rejected: "${val}" is not a valid model ID for ${match[0]} (must contain "/")`);
@@ -216,8 +239,11 @@ const toolMap = {
     }
 
     if (Object.keys(applied).length === 0) {
-      log("config", `update_config failed — unknown keys: ${JSON.stringify(unknown)}, raw changes: ${JSON.stringify(changes)}`);
-      return { success: false, unknown, reason };
+      const reasonMsg = blocked.length
+        ? `Cannot modify locked keys: ${blocked.join(", ")} (user-managed only)`
+        : "Unknown config keys";
+      log("config", `update_config failed — ${reasonMsg}. blocked: ${JSON.stringify(blocked)}, unknown: ${JSON.stringify(unknown)}`);
+      return { success: false, unknown, blocked, reason: reasonMsg };
     }
 
     // Apply to live config immediately
