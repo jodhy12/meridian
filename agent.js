@@ -184,7 +184,9 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       const activeModel = model || DEFAULT_MODEL;
 
       // Retry up to 3 times on transient provider errors (502, 503, 529)
-      const FALLBACK_MODEL = "stepfun/step-3.5-flash:free";
+      // Fallback to a different model family on the same provider (avoids 502/503 spikes on a single model)
+// MiniMax M2.7 chosen: short input/output pattern fits Meridian's tool-call use case + different model family than primary
+const FALLBACK_MODEL = "opencode-go/minimax-m2.7";
       let response;
       let usedModel = activeModel;
       // Force a tool call on step 0 for action intents — prevents the model from inventing deploy/close outcomes
@@ -200,12 +202,15 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             tool_choice: toolChoice,
             temperature: config.llm.temperature,
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
-            // OpenRouter provider routing — prefer fast providers with prompt caching
-            // Order by: low latency × good cache discount × no premium pricing
-            // Skip: SiliconFlow (slow), Vertex (no cache), Friendli/AtlasCloud Fast (2× price)
-            ...(usedModel.startsWith("deepseek/") ? {
+            // OpenRouter provider routing — only applies when using OpenRouter (deepseek/* prefix)
+            // OpenCode Go (opencode-go/*) handles routing internally — skip this block
+            // DeepInfra empirically gives 100% cache hit on sequential calls
+            // AtlasCloud cache unreliable (7/8 miss empirically) but kept as last fallback
+            // SiliconFlow blacklisted — no caching, slow, returns truncated outputs
+            ...(usedModel.startsWith("deepseek/") && (process.env.LLM_BASE_URL || "").includes("openrouter") ? {
               provider: {
                 order: ["DeepInfra", "Alibaba", "NovitaAI", "AtlasCloud"],
+                ignore: ["SiliconFlow", "Vertex", "Friendli"],
                 allow_fallbacks: true,
               },
             } : {}),
