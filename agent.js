@@ -188,8 +188,8 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
 
       // Retry up to 3 times on transient provider errors (502, 503, 529)
       // Fallback to a different model family on the same provider (avoids 502/503 spikes on a single model)
-// MiniMax M2.7 chosen: short input/output pattern fits Meridian's tool-call use case + different model family than primary
-const FALLBACK_MODEL = "minimax-m2.7";
+// Kimi K2.6 chosen: chat model (no thinking overhead), different family than primary MiniMax
+const FALLBACK_MODEL = "kimi-k2.6";
       let response;
       let usedModel = activeModel;
       // Force a tool call on step 0 for action intents — prevents the model from inventing deploy/close outcomes
