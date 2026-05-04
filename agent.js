@@ -267,12 +267,17 @@ const FALLBACK_MODEL = "kimi-k2.6";
         throw new Error(`API returned no choices: ${response.error?.message || JSON.stringify(response)}`);
       }
 
-      // Track token usage + cache hit rate (DeepSeek/OpenRouter caching)
+      // Track token usage + cache hit rate
+      // Provider semantics differ:
+      //   OpenAI/DeepInfra: prompt_tokens = total (fresh + cached); cached_tokens is subset
+      //   OpenCode Go:      prompt_tokens = fresh only;             cached_tokens reported separately
+      // Detect by: if cached > prompt, treat as separate (OpenCode Go style)
       if (response.usage) {
         const u = response.usage;
         const cachedIn = u.prompt_cache_hit_tokens ?? u.prompt_tokens_details?.cached_tokens ?? 0;
-        const totalIn = u.prompt_tokens ?? 0;
+        const reportedIn = u.prompt_tokens ?? 0;
         const out = u.completion_tokens ?? 0;
+        const totalIn = cachedIn > reportedIn ? reportedIn + cachedIn : reportedIn; // normalize to fresh+cached
         const cacheRate = totalIn > 0 ? Math.round((cachedIn / totalIn) * 100) : 0;
         if (cachedIn > 0) {
           log("agent_usage", `[Step ${step}] in=${totalIn} (cached=${cachedIn}, ${cacheRate}%) out=${out}`);
