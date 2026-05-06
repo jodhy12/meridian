@@ -132,6 +132,33 @@ function formatMgmtTelegram(positionData, actionMap, mgmtReport, solMode) {
     const binStep = tracked?.bin_step ?? null;
     const stratStr = [strat, binStep ? `${binStep}bs` : null].filter(Boolean).join(" · ");
 
+    // Bin position visualization
+    // For in-range: progress bar showing where active bin sits between lower and upper
+    // For OOR: indicate direction and distance from range
+    const activeBin = p.active_bin;
+    const lowerBin = p.lower_bin;
+    const upperBin = p.upper_bin;
+    let binLine = null;
+    if (activeBin != null && lowerBin != null && upperBin != null && upperBin > lowerBin) {
+      const rangeWidth = upperBin - lowerBin;
+      if (p.in_range) {
+        const pctFromLower = ((activeBin - lowerBin) / rangeWidth) * 100;
+        const clamped = Math.max(0, Math.min(100, pctFromLower));
+        const barWidth = 16;
+        const fillIdx = Math.round((clamped / 100) * (barWidth - 1));
+        const bar = Array.from({ length: barWidth }, (_, i) => i === fillIdx ? "●" : "─").join("");
+        const pctRounded = Math.round(clamped);
+        const zoneIcon = pctRounded >= 85 ? "⚠️" : pctRounded <= 15 ? "⚠️" : "🟢";
+        binLine = `   📍 <code>${lowerBin} [${bar}] ${upperBin}</code>  ${zoneIcon} bin ${activeBin} (${pctRounded}%)`;
+      } else if (activeBin > upperBin) {
+        const binsAbove = activeBin - upperBin;
+        binLine = `   🔺 <code>[${lowerBin},${upperBin}]</code> · bin ${activeBin} <b>${binsAbove} above</b>`;
+      } else if (activeBin < lowerBin) {
+        const binsBelow = lowerBin - activeBin;
+        binLine = `   🔻 <code>[${lowerBin},${upperBin}]</code> · bin ${activeBin} <b>${binsBelow} below</b>`;
+      }
+    }
+
     // Instruction/note
     const instrLine = p.instruction ? `   📝 <i>${escHTML(p.instruction.substring(0, 60))}</i>` : null;
 
@@ -145,6 +172,7 @@ function formatMgmtTelegram(positionData, actionMap, mgmtReport, solMode) {
       `${rangeEmoji} <b>${escHTML(p.pair)}</b>  ${pnlEmoji} <b>${pnlSign}${pnl.toFixed(2)}%</b>${pnlUsdStr}`,
       line2,
       line3,
+      binLine,
       instrLine,
       `   ${actionLine}`,
     ].filter(Boolean).join("\n");
