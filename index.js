@@ -5,7 +5,7 @@ import { agentLoop } from "./agent.js";
 import { log } from "./logger.js";
 import { getMyPositions, closePosition } from "./tools/dlmm.js";
 import { getTechnicalSignals } from "./tools/ohlcv.js";
-import { getWalletBalances, invalidateWalletCache } from "./tools/wallet.js";
+import { getWalletBalances } from "./tools/wallet.js";
 import { getTopCandidates } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
 import { evolveThresholds, getPerformanceSummary, backfillSignalSnapshots, recordScreeningOutcome } from "./lessons.js";
@@ -20,9 +20,6 @@ import { cachePoolSignals } from "./screening-cache.js";
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
 log("startup", `Model: ${process.env.LLM_MODEL || "hermes-3-405b"}`);
-
-// Ensure fresh wallet state on startup (no stale cache from previous run)
-invalidateWalletCache();
 
 // Backfill state.json from lessons.json for any positions that were closed
 // but not tracked (e.g. state.json was overwritten or positions predated tracking)
