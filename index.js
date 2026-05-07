@@ -516,14 +516,15 @@ export async function runManagementCycle({ silent = false } = {}) {
         actionMap.set(p.position, { action: "CLOSE", rule: 6, reason: "stale — IL > fees" });
         continue;
       }
-      // Rule 7: "nyayur" check — in range but generating ~zero fees after 10 min → dead pool
-      // Data: 6 dead pools avg held 18m before detection — catch earlier
-      // Use threshold (not strict ===0) to catch near-dead pools with dust fees
+      // Rule 7: "nyayur" check — in range but generating ~zero fees → dead pool
+      // Data (May 4-7, 2026): 4 closes, 0 wins (avg PnL -0.00%) — was triggering too fast at 10m
+      // Adjusted: 10m → 30m threshold to give pool time to develop fee accumulation
+      // Pool genuinely dead if yield≤0.01% AND fees<0.001 sustained for 30min (not transient)
       if (p.in_range &&
-          (p.age_minutes ?? 0) >= 10 &&
+          (p.age_minutes ?? 0) >= 30 &&
           (p.fee_per_tvl_24h ?? -1) <= 0.01 &&
           (p.unclaimed_fees_usd ?? 0) < 0.001) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 7, reason: "near-zero fees after 10 min — dead pool" });
+        actionMap.set(p.position, { action: "CLOSE", rule: 7, reason: "near-zero fees after 30 min — dead pool" });
         continue;
       }
       // Rule 8: max hold for negative PnL — data: 5 positions held >120m while negative = -14.10% total loss
