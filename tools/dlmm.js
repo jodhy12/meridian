@@ -4,15 +4,20 @@ import {
   PublicKey,
   sendAndConfirmTransaction,
 } from "@solana/web3.js";
+import { invalidateWalletCache } from "./wallet.js";
 
 // Wrap sendAndConfirmTransaction with a hard timeout to prevent infinite hangs
+// Also auto-invalidates wallet balance cache on success — balance changed
 async function sendWithTimeout(connection, tx, signers, timeoutMs = 45_000) {
-  return Promise.race([
+  const result = await Promise.race([
     sendAndConfirmTransaction(connection, tx, signers),
     new Promise((_, reject) =>
       setTimeout(() => reject(new Error(`Transaction timeout after ${timeoutMs / 1000}s`)), timeoutMs)
     ),
   ]);
+  // Tx confirmed — wallet balance may have changed (deploy/close/claim consume SOL)
+  invalidateWalletCache();
+  return result;
 }
 import BN from "bn.js";
 import bs58 from "bs58";

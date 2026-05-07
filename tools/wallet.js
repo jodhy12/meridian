@@ -30,11 +30,33 @@ const JUPITER_ULTRA_API = "https://api.jup.ag/ultra/v1";
 const JUPITER_QUOTE_API = "https://api.jup.ag/swap/v1";
 const JUPITER_API_KEY = "b15d42e9-e0e4-4f90-a424-ae41ceeaa382";
 
+// ─── Wallet Balance Cache (Helius credit saver) ──────────────
+// Helius API charges 100 credits per call (vs RPC 1 credit) — major optimization target
+// Balance only changes when bot submits tx (deploy/close/claim/swap) or external transfer
+// 30s TTL covers vast majority of cases; auto-invalidated after our txs
+let _balanceCache = { data: null, expires: 0 };
+const BALANCE_CACHE_TTL = 30_000; // 30 seconds
+
+/**
+ * Force-invalidate wallet cache. Called after any tx that changes balance.
+ */
+export function invalidateWalletCache() {
+  _balanceCache = { data: null, expires: 0 };
+}
+
 /**
  * Get current wallet balances: SOL, USDC, and all SPL tokens using Helius Wallet API.
  * Returns USD-denominated values provided by Helius.
+ *
+ * @param {Object} opts
+ * @param {boolean} opts.force - Bypass cache (use when fresh data critical)
  */
-export async function getWalletBalances() {
+export async function getWalletBalances({ force = false } = {}) {
+  // Cache hit — return cached data if still fresh
+  if (!force && _balanceCache.data && Date.now() < _balanceCache.expires) {
+    return _balanceCache.data;
+  }
+
   let walletAddress;
   try {
     walletAddress = getWallet().publicKey.toString();
@@ -76,7 +98,7 @@ export async function getWalletBalances() {
       usd: b.usdValue ? Math.round(b.usdValue * 100) / 100 : null,
     }));
 
-    return {
+    const result = {
       wallet: walletAddress,
       sol: Math.round(solBalance * 1e6) / 1e6,
       sol_price: Math.round(solPrice * 100) / 100,
@@ -85,6 +107,14 @@ export async function getWalletBalances() {
       tokens: enrichedTokens,
       total_usd: Math.round((data.totalUsdValue || 0) * 100) / 100,
     };
+
+    // Cache the fresh result
+    _balanceCache = {
+      data: result,
+      expires: Date.now() + BALANCE_CACHE_TTL,
+    };
+
+    return result;
   } catch (error) {
     log("wallet_error", error.message);
     return {
@@ -202,6 +232,9 @@ export async function swapToken({
 
     log("swap", `SUCCESS tx: ${result.signature}`);
 
+    // Wallet balance changed — invalidate cache
+    invalidateWalletCache();
+
     return {
       success: true,
       tx: result.signature,
@@ -246,5 +279,9 @@ async function swapViaQuoteApi({ wallet, connection, input_mint, output_mint, am
   await connection.confirmTransaction(txHash, "confirmed");
 
   log("swap", `SUCCESS (fallback) tx: ${txHash}`);
+
+  // Wallet balance changed — invalidate cache
+  invalidateWalletCache();
+
   return { success: true, tx: txHash, input_mint, output_mint };
 }
