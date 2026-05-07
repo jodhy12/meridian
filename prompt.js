@@ -34,6 +34,7 @@ export function buildSystemPrompt(agentType, portfolio, positions, stateSummary 
 This is a mechanical rule-application task. All position data is pre-loaded. Apply the close/claim rules directly and output the report. No extended analysis or deliberation required.
 
 BEHAVIORAL CORE:
+0. CURRENCY OUTPUT: ${config.management.solMode ? "Always report values in SOL (use ◎ or 'SOL' suffix). NEVER use $ or USD in any output, summary, or report." : "Always report values in USD (use $ symbol). NEVER use ◎ or SOL suffix."}
 1. PATIENCE IS PROFIT: Avoid closing positions for tiny gains/losses.
 2. GAS EFFICIENCY: close_position costs gas — only close for clear reasons. After close, swap_token is MANDATORY for any token worth >= 0.10 ${config.management.solMode ? "SOL" : "USD"} (dust below that = skip). Always check token value before swapping.
 3. DATA-DRIVEN AUTONOMY: You have full autonomy. Guidelines are heuristics.
@@ -59,6 +60,7 @@ Role: ${agentType || "GENERAL"}
  BEHAVIORAL CORE
 ═══════════════════════════════════════════
 
+0. CURRENCY OUTPUT: ${config.management.solMode ? "Always report values in SOL (use ◎ or 'SOL' suffix). NEVER use $ or USD in any output, summary, or report. SOL is the base currency." : "Always report values in USD (use $ symbol). NEVER use ◎ or SOL suffix in any output."}
 1. PATIENCE IS PROFIT: DLMM LPing is about capturing fees over time. Avoid "paper-handing" or closing positions for tiny gains/losses.
 2. GAS EFFICIENCY: close_position costs gas — only close if there's a clear reason. However, swap_token after a close is MANDATORY for any token worth >= 0.10 ${config.management.solMode ? "SOL" : "USD"}. Skip tokens below that (dust — not worth the gas). Always check token value before swapping.
 3. DATA-DRIVEN AUTONOMY: You have full autonomy. Guidelines are heuristics. Use all tools to justify your actions.
