@@ -623,6 +623,20 @@ export async function getMyPositions({ force = false, silent = false } = {}) {
       }
     }
 
+    // ─── Add SOL aliases when solMode=true (clearer naming for LLM) ───
+    // The existing *_usd fields actually contain SOL values when solMode=true (legacy naming).
+    // Adding *_sol aliases pointing to same data + explicit `currency` field eliminates LLM confusion.
+    if (config.management.solMode) {
+      for (const p of positions) {
+        p.currency = "SOL";
+        p.unclaimed_fees_sol = p.unclaimed_fees_usd;
+        p.total_value_sol = p.total_value_usd;
+        p.collected_fees_sol = p.collected_fees_usd;
+        p.pnl_sol = p.pnl_usd;
+        // Keep *_true_usd fields untouched — they ARE actual USD values for reference
+      }
+    }
+
     const result = { wallet: walletAddress, total_positions: positions.length, positions };
     syncOpenPositions(positions.map(p => p.position));
     _positionsCache = result;
