@@ -588,9 +588,11 @@ async function runSafetyChecks(name, args) {
           const mintMatch = args.base_mint && p.base_mint && p.base_mint === args.base_mint;
           if (!nameMatch && !mintMatch) return false;
           // Check if it was a loss, flat, or poor performer
+          // Includes Early IL (Rule 5) and max hold negative (Rule 8) which were missing
           const wasLoss = p.notes?.some(n =>
             n.includes("IL stop") || n.includes("stop loss") || n.includes("stale") ||
-            n.includes("low yield") || n.includes("dead pool") || n.includes("no fees")
+            n.includes("low yield") || n.includes("dead pool") || n.includes("no fees") ||
+            n.includes("Early IL") || n.includes("max hold") || n.includes("OOR")
           );
           const peakLow = (p.peak_pnl_pct ?? 0) < 1;
           return wasLoss || peakLow;
