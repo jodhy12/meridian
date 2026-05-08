@@ -374,19 +374,38 @@ export async function getPositionPnl({ pool_address, position_address }) {
   pool_address = normalizeMint(pool_address);
   position_address = normalizeMint(position_address);
   const walletAddress = getWallet().publicKey.toString();
+  const solMode = config.management.solMode;
   try {
     const byAddress = await fetchDlmmPnlForPool(pool_address, walletAddress);
     const p = byAddress[position_address];
     if (!p) return { error: "Position not found in PnL API" };
 
-    const unclaimedUsd    = parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0);
-    const currentValueUsd = parseFloat(p.unrealizedPnl?.balances || 0);
+    // Compute values based on solMode — SOL native or USD
+    const unclaimedFee = solMode
+      ? parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.amountSol || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.amountSol || 0)
+      : parseFloat(p.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(p.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0);
+    const currentValue = solMode
+      ? parseFloat(p.unrealizedPnl?.balancesNative || p.unrealizedPnl?.balances || 0)
+      : parseFloat(p.unrealizedPnl?.balances || 0);
+    const pnlValue = solMode
+      ? parseFloat(p.pnlSol ?? p.pnlNative ?? 0)
+      : parseFloat(p.pnlUsd ?? 0);
+    const allTimeFees = solMode
+      ? parseFloat(p.allTimeFees?.total?.amountSol || p.allTimeFees?.total?.native || 0)
+      : parseFloat(p.allTimeFees?.total?.usd || 0);
+    const pnlPct = solMode
+      ? parseFloat(p.pnlSolPctChange ?? p.pnlPctChange ?? 0)
+      : parseFloat(p.pnlPctChange ?? 0);
+
+    // Use currency-suffixed field names so LLM knows the unit
+    const unitSuffix = solMode ? "_sol" : "_usd";
     return {
-      pnl_usd:           Math.round((p.pnlUsd ?? 0) * 100) / 100,
-      pnl_pct:           Math.round((p.pnlPctChange ?? 0) * 100) / 100,
-      current_value_usd: Math.round(currentValueUsd * 100) / 100,
-      unclaimed_fee_usd: Math.round(unclaimedUsd * 100) / 100,
-      all_time_fees_usd: Math.round(parseFloat(p.allTimeFees?.total?.usd || 0) * 100) / 100,
+      [`pnl${unitSuffix}`]:           Math.round(pnlValue * 10000) / 10000,
+      pnl_pct:                         Math.round(pnlPct * 100) / 100,
+      [`current_value${unitSuffix}`]: Math.round(currentValue * 10000) / 10000,
+      [`unclaimed_fee${unitSuffix}`]: Math.round(unclaimedFee * 10000) / 10000,
+      [`all_time_fees${unitSuffix}`]: Math.round(allTimeFees * 10000) / 10000,
+      currency:    solMode ? "SOL" : "USD",
       fee_per_tvl_24h:   Math.round(parseFloat(p.feePerTvl24h || 0) * 100) / 100,
       in_range:    !p.isOutOfRange,
       lower_bin:   p.lowerBinId      ?? null,

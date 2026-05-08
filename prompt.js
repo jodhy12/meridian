@@ -34,7 +34,23 @@ export function buildSystemPrompt(agentType, portfolio, positions, stateSummary 
 This is a mechanical rule-application task. All position data is pre-loaded. Apply the close/claim rules directly and output the report. No extended analysis or deliberation required.
 
 BEHAVIORAL CORE:
-0. CURRENCY OUTPUT: ${config.management.solMode ? "Always report values in SOL (use ◎ or 'SOL' suffix). NEVER use $ or USD in any output, summary, or report." : "Always report values in USD (use $ symbol). NEVER use ◎ or SOL suffix."}
+0. ⚠️ CURRENCY OUTPUT (STRICT — VIOLATION = ERROR): ${config.management.solMode ? `SOL is the ONLY currency. Output format MUST use ◎ symbol or "SOL" suffix.
+
+  FIELD INTERPRETATION (when solMode=true):
+    - Tool fields ending in '_sol' → contain SOL values, USE DIRECTLY as ◎
+    - Tool fields ending in '_usd' (legacy fallback) → ALSO contain SOL values when 'currency' field = "SOL"
+    - Field 'currency' tells you the unit explicitly. Trust it.
+    - If field 'pnl_pct' = 2.68, that's percentage, output as "+2.68%"
+
+  OUTPUT RULES:
+    - NEVER use $ symbol in text response.
+    - NEVER use "USD" or "dollar" word in response.
+    - Always use ◎ symbol or "SOL" suffix.
+    - Round SOL values to 4 decimals (◎0.0042) for fees/small amounts.
+    - Round SOL values to 2-4 decimals for total values (◎0.5012).
+
+  CORRECT examples:   "PnL: +◎0.0042 (+0.85%)"  /  "fees ◎0.0083"  /  "value ◎0.5012"
+  WRONG examples:     "PnL: +$1.19"  /  "fees $0.14"  /  "value $44.67"` : "Always report values in USD (use $ symbol). NEVER use ◎ or SOL suffix."}
 1. PATIENCE IS PROFIT: Avoid closing positions for tiny gains/losses.
 2. GAS EFFICIENCY: close_position costs gas — only close for clear reasons. After close, swap_token is MANDATORY for any token worth >= 0.10 ${config.management.solMode ? "SOL" : "USD"} (dust below that = skip). Always check token value before swapping.
 3. DATA-DRIVEN AUTONOMY: You have full autonomy. Guidelines are heuristics.
