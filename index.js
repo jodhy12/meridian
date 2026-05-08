@@ -6,7 +6,7 @@ import { log } from "./logger.js";
 import { getMyPositions, closePosition } from "./tools/dlmm.js";
 import { getTechnicalSignals } from "./tools/ohlcv.js";
 import { getWalletBalances } from "./tools/wallet.js";
-import { getTopCandidates } from "./tools/screening.js";
+import { getTopCandidates, getPoolDetail } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
 import { evolveThresholds, getPerformanceSummary, backfillSignalSnapshots, recordScreeningOutcome } from "./lessons.js";
 import { registerCronRestarter, executeTool } from "./tools/executor.js";
@@ -796,6 +796,23 @@ export async function runScreeningCycle({ silent = false } = {}) {
         continue;
       }
 
+      // 2e-bonus. Multi-TF Fee/TVL pump trap detection
+      // Pump pattern: fee_tvl(4h) >> fee_tvl(current TF) = sustained pump dropping = post-pump phase
+      // Healthy: ratios consistent across TFs
+      try {
+        const pool4h = await getPoolDetail({ pool_address: pool.pool, timeframe: "4h" });
+        const fee4h = Number(pool4h?.fee_active_tvl_ratio || 0);
+        const feeNow = Number(pool.fee_active_tvl_ratio || 0);
+        // Threshold: 4h > 5× current = recent activity dropped sharply vs longer window (post-pump distribution)
+        if (fee4h > 0 && feeNow > 0 && fee4h / feeNow > 5) {
+          log("screening", `Filtered ${pool.name} — pump trap multi-TF: fee_tvl 4h=${fee4h.toFixed(2)} >> current=${feeNow.toFixed(2)} (ratio ${(fee4h/feeNow).toFixed(1)}× — post-pump)`);
+          continue;
+        }
+        pool._fee_tvl_4h = fee4h;
+      } catch (e) {
+        // Non-blocking — if API fails, continue with single-TF check
+      }
+
       // 2f. Technical signals (entry ok? bearish? volume spike?)
       // Delay to avoid GeckoTerminal 429 — sequential calls, 2.5s apart
       await new Promise(r => setTimeout(r, 2500));
@@ -803,6 +820,15 @@ export async function runScreeningCycle({ silent = false } = {}) {
       try {
         const raw = await getTechnicalSignals({ pool_address: pool.pool, timeframe: "15m" });
         if (!raw?.error) tech = raw;
+      } catch { /**/ }
+
+      // 2d-bonus. Multi-TF supertrend confirmation (1h)
+      // Hard-skip if 15m AND 1h both bearish — strong macro downtrend signal
+      let tech1h = null;
+      try {
+        await new Promise(r => setTimeout(r, 1500)); // delay between OHLCV calls
+        const raw1h = await getTechnicalSignals({ pool_address: pool.pool, timeframe: "1h" });
+        if (!raw1h?.error) tech1h = raw1h;
       } catch { /**/ }
 
       // 2e. Pre-compute bins — narrow range matched to aggressive stop loss strategy
@@ -819,6 +845,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       pool._tech_snapshot = tech ? {
         rsi2: tech.indicators?.rsi2 ?? null,
         supertrend: tech.indicators?.supertrend?.direction ?? null,
+        supertrend_1h: tech1h?.indicators?.supertrend?.direction ?? null,
         vwap_dist_pct: tech.indicators?.vwap?.distance_pct ?? null,
         volume_spike: tech.indicators?.volume_spike?.is_spike ?? false,
       } : null;
@@ -830,8 +857,15 @@ export async function runScreeningCycle({ silent = false } = {}) {
         log("screening", `Filtered ${pool.name} — overbought at entry (exit signal active)`);
         continue;
       }
-      if (tech?.indicators?.supertrend && !tech.indicators.supertrend.is_bullish) {
-        log("screening", `Warning: ${pool.name} — bearish supertrend (${tech.indicators.supertrend.direction}), score ${pool.score}. Passing anyway`);
+      // 2f-bonus. Multi-TF bearish hard-skip: both 15m AND 1h bearish = strong dump signal
+      const st15mBearish = tech?.indicators?.supertrend && !tech.indicators.supertrend.is_bullish;
+      const st1hBearish = tech1h?.indicators?.supertrend && !tech1h.indicators.supertrend.is_bullish;
+      if (st15mBearish && st1hBearish) {
+        log("screening", `Filtered ${pool.name} — multi-TF bearish (15m + 1h both bearish supertrend) — strong downtrend, skip`);
+        continue;
+      }
+      if (st15mBearish) {
+        log("screening", `Warning: ${pool.name} — 15m bearish supertrend (1h: ${tech1h?.indicators?.supertrend?.direction || "unknown"}), score ${pool.score}. Passing anyway`);
       }
 
       // Cache all signals for this pool so executor can inject signal_snapshot at deploy
@@ -919,16 +953,27 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const smartWallets = pool.smart_wallets_present ?? null;
       const bundlePct = pool.bundle_pct ?? ti?.bundle_pct ?? null;
 
+      // Multi-TF context
+      const fee4h = pool._fee_tvl_4h;
+      const feeMultiTF = fee4h != null
+        ? `current=${pool.fee_active_tvl_ratio}% | 4h=${fee4h}%`
+        : `${pool.fee_active_tvl_ratio}%`;
+
+      // Multi-TF tech (15m + 1h supertrend)
+      const st15m = pool._tech_snapshot?.supertrend ?? "?";
+      const st1h  = pool._tech_snapshot?.supertrend_1h ?? "?";
+      const stMultiTF = st1h !== "?" ? `15m=${st15m}/1h=${st1h}` : `15m=${st15m}`;
+
       return [
         `━━━ ${pool.name} ━━━`,
         `  Score:    ${pool.score} [${pool.score_label}]`,
         `  Breakdown:\n    ${scoreBreakdown}`,
-        `  Metrics:  fee_tvl=${pool.fee_active_tvl_ratio}% | vol=$${pool.volume_window} | tvl=$${pool.active_tvl} | volatility=${vol} | organic=${pool.organic_score} | mcap=$${pool.mcap}${pool.token_age_hours != null ? ` | age=${pool.token_age_hours}h` : ""}`,
+        `  Metrics:  fee_tvl=${feeMultiTF} | vol=$${pool.volume_window} | tvl=$${pool.active_tvl} | volatility=${vol} | organic=${pool.organic_score} | mcap=$${pool.mcap}${pool.token_age_hours != null ? ` | age=${pool.token_age_hours}h` : ""}`,
         `  Audit:    top10=${top10}% | bots=${bots}%${bundlePct != null ? ` | bundle=${bundlePct}%` : ""} | fees_sol=${feesSol}${holderCount != null ? ` | holders=${holderCount}` : ""}${launchpad ? ` | launchpad=${launchpad}` : ""}`,
         `  OKX:      ${okxRisk}`,
         okxTags ? `  Tags:     ${okxTags}` : null,
         pool.price_vs_ath_pct != null ? `  ATH:      price_vs_ath=${pool.price_vs_ath_pct}%` : null,
-        `  Tech:     ${techStatus}`,
+        `  Tech:     ${techStatus} | supertrend ${stMultiTF}`,
         `  Bins:     below=${pool._bins_below} above=${pool._bins_above} (use as-is, do NOT recalculate)`,
         `  Pool:     ${pool.pool}`,
       ].filter(Boolean).join("\n");
