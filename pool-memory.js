@@ -258,8 +258,53 @@ export function isBaseMintOnCooldown(baseMint) {
 // ─── Read ──────────────────────────────────────────────────────
 
 /**
+ * Compute statistical confidence label based on sample size.
+ * Sample size matters: 100% win_rate with 1 sample ≠ 100% with 30 samples.
+ */
+function getConfidenceLabel(sampleSize) {
+  if (sampleSize === 0) return "no_data";
+  if (sampleSize === 1) return "low (1 sample — anecdotal)";
+  if (sampleSize < 5) return `low (${sampleSize} samples — insufficient)`;
+  if (sampleSize < 10) return `medium (${sampleSize} samples)`;
+  if (sampleSize < 20) return `good (${sampleSize} samples)`;
+  return `high (${sampleSize} samples)`;
+}
+
+/**
+ * Aggregate token-level stats across ALL pools sharing same base_mint.
+ * Critical: same token in different pools = different pool entries, but
+ * pattern detection should be at token level (e.g., HANTA-SOL prank pattern).
+ */
+function getTokenLevelStats(db, baseMint) {
+  if (!baseMint) return null;
+  const allDeploys = [];
+  let poolsCount = 0;
+  for (const entry of Object.values(db)) {
+    if (entry?.base_mint === baseMint && entry?.deploys?.length) {
+      allDeploys.push(...entry.deploys);
+      poolsCount++;
+    }
+  }
+  if (allDeploys.length === 0) return null;
+  const wins = allDeploys.filter((d) => (d.pnl_pct ?? 0) > 0).length;
+  const losses = allDeploys.filter((d) => (d.pnl_pct ?? 0) < 0).length;
+  const winRate = (wins + losses) > 0 ? Math.round((wins / (wins + losses)) * 100) : 0;
+  const avgPnl = allDeploys.reduce((s, d) => s + (d.pnl_pct ?? 0), 0) / allDeploys.length;
+  return {
+    pools_count: poolsCount,
+    total_deploys: allDeploys.length,
+    wins,
+    losses,
+    win_rate: winRate,
+    avg_pnl_pct: Math.round(avgPnl * 100) / 100,
+    confidence: getConfidenceLabel(allDeploys.length),
+  };
+}
+
+/**
  * Tool handler: get_pool_memory
  * Returns deploy history and summary for a pool.
+ * Includes statistical confidence + token-level aggregation across pools.
  */
 export function getPoolMemory({ pool_address }) {
   if (!pool_address) return { error: "pool_address required" };
@@ -280,16 +325,23 @@ export function getPoolMemory({ pool_address }) {
   const consecutiveLosses = recentDeploys.length === 3 &&
     recentDeploys.every((d) => (d.pnl_pct ?? 0) < 0);
 
+  // Token-level aggregation (across all pools with same base_mint)
+  const tokenStats = getTokenLevelStats(db, entry.base_mint);
+
   return {
     pool_address,
     known: true,
     name: entry.name,
     base_mint: entry.base_mint,
+    // Pool-level stats (this specific pool address)
     total_deploys: entry.total_deploys,
     avg_pnl_pct: entry.avg_pnl_pct,
     win_rate: entry.win_rate,
     adjusted_win_rate: entry.adjusted_win_rate ?? 0,
     adjusted_win_rate_sample_count: entry.adjusted_win_rate_sample_count ?? 0,
+    pool_confidence: getConfidenceLabel(entry.total_deploys || 0),
+    // Token-level stats (across ALL pools sharing this base_mint) — broader pattern view
+    token_stats: tokenStats,
     last_deployed_at: entry.last_deployed_at,
     last_outcome: entry.last_outcome,
     consecutive_losses: consecutiveLosses ? 3 : null,

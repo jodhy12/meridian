@@ -780,9 +780,10 @@ export function getLessonsForPrompt(opts = {}) {
   const outcomePriority = { bad: 0, poor: 1, failed: 1, good: 2, worked: 2, manual: 1, neutral: 3, evolution: 2 };
   const byPriority = (a, b) => (outcomePriority[a.outcome] ?? 3) - (outcomePriority[b.outcome] ?? 3);
 
-  // self_tune lessons record past config changes that are already persisted in user-config.json.
-  // Re-injecting them causes the LLM to re-apply stale config values on every cycle.
-  const eligibleLessons = data.lessons.filter((l) => !l.tags?.includes("self_tune"));
+  // Exclude lessons that pollute LLM context:
+  // - self_tune: past config changes already persisted in user-config.json (re-applying = stale)
+  // - outdated: explicitly marked outdated by maintainer/LLM (no longer applicable to current strategy)
+  const eligibleLessons = data.lessons.filter((l) => !l.tags?.includes("self_tune") && !l.outdated);
 
   // ── Tier 1: Pinned ──────────────────────────────────────────────
   // Respect role even for pinned lessons — a pinned SCREENER lesson shouldn't pollute MANAGER
