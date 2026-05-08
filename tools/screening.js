@@ -2,7 +2,7 @@ import { config } from "../config.js";
 import { isBlacklisted } from "../token-blacklist.js";
 import { isDevBlocked, getBlockedDevs } from "../dev-blocklist.js";
 import { log } from "../logger.js";
-import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
+import { isBaseMintOnCooldown, isPoolOnCooldown, isPoolOnRejectionCooldown, markPoolRejection } from "../pool-memory.js";
 import { loadWeights } from "../signal-weights.js";
 
 // Cache evolved weights for the duration of a screening cycle
@@ -347,6 +347,30 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     if (traders < minTraders) {
       log("screening", `Activity filter: dropped ${p.name} — unique_traders ${traders} < ${minTraders}`);
       pushFilteredReason(filteredOut, p, `unique_traders ${traders} < ${minTraders}`);
+      return false;
+    }
+    return true;
+  }));
+
+  // ── Distribution risk filter (anti-whipsaw) ──────────────────
+  // Data: soothsayer-SOL May 8 — rejected at 01:25 (volume_spike + price -5.8%),
+  // accepted at 01:40 when signals decayed → -11.30% loss.
+  // Hard rule: volume_spike >= 3 AND price_change_pct <= -5 = high distribution risk.
+  // Mark 60-min rejection cooldown to prevent re-evaluation when signals decay too fast.
+  eligible.splice(0, eligible.length, ...eligible.filter((p) => {
+    // Check existing rejection cooldown first (from previous cycle)
+    if (isPoolOnRejectionCooldown(p.pool)) {
+      log("screening", `Filtered ${p.name} — rejection cooldown active (recent distribution risk)`);
+      pushFilteredReason(filteredOut, p, "rejection cooldown active");
+      return false;
+    }
+    // New distribution risk detection
+    const volumeSpike = Number(p.volume_spike ?? 0);
+    const priceChange = Number(p.price_change_pct ?? 0);
+    if (volumeSpike >= 3 && priceChange <= -5) {
+      log("screening", `Filtered ${p.name} — distribution risk: volume_spike=${volumeSpike}× + price_change=${priceChange}%`);
+      pushFilteredReason(filteredOut, p, `distribution risk: vol_spike ${volumeSpike}× + dump ${priceChange}%`);
+      markPoolRejection(p.pool, `distribution_risk vol=${volumeSpike}x price=${priceChange}%`, 60);
       return false;
     }
     return true;

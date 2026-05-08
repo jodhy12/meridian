@@ -197,6 +197,53 @@ export function isPoolOnCooldown(poolAddress) {
   return false;
 }
 
+/**
+ * Mark a pool as recently REJECTED by screening (without ever being deployed).
+ * Used to prevent whipsaw: pool rejected for distribution risk → indicator decays
+ * → pool re-evaluated and accepted in same scanning session.
+ * Stored separately from regular cooldown (which applies to closed positions).
+ *
+ * @param {string} poolAddress
+ * @param {string} reason — e.g. "distribution_risk: volume_spike + price dump"
+ * @param {number} minutes — cooldown duration (default 60 min)
+ */
+export function markPoolRejection(poolAddress, reason, minutes = 60) {
+  if (!poolAddress) return;
+  const db = load();
+  if (!db[poolAddress]) {
+    db[poolAddress] = {
+      name: poolAddress.slice(0, 8),
+      base_mint: null,
+      deploys: [],
+      total_deploys: 0,
+      avg_pnl_pct: 0,
+      win_rate: 0,
+      adjusted_win_rate: 0,
+      adjusted_win_rate_sample_count: 0,
+      last_deployed_at: null,
+      last_outcome: null,
+      notes: [],
+    };
+  }
+  const until = new Date(Date.now() + minutes * 60 * 1000).toISOString();
+  db[poolAddress].rejection_cooldown_until = until;
+  db[poolAddress].rejection_reason = reason;
+  save(db);
+  log("pool-memory", `Marked rejection for ${db[poolAddress].name} until ${until} (${reason})`);
+}
+
+/**
+ * Check if pool has an active rejection cooldown (from screening, not deploy).
+ */
+export function isPoolOnRejectionCooldown(poolAddress) {
+  if (!poolAddress) return false;
+  const db = load();
+  const entry = db[poolAddress];
+  if (!entry) return false;
+  if (entry.rejection_cooldown_until && new Date(entry.rejection_cooldown_until) > new Date()) return true;
+  return false;
+}
+
 export function isBaseMintOnCooldown(baseMint) {
   if (!baseMint) return false;
   const db = load();
