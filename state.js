@@ -480,19 +480,25 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
       }
     }
     const dropFromPeak = pos.peak_pnl_pct - currentPnlPct;
-    if (dropFromPeak >= mgmtConfig.trailingDropPct) {
+    // Vol-aware trailing TP: high-volatility pools (vol >= 4) need wider drop threshold
+    // Data: lesson "trailing TP 1.5% too tight on vol > 4 — false-whipsaw closes 2-3% loss"
+    // Goblin-SOL & similar high-vol pools fired trailing prematurely with default 1.5%
+    const positionVol = pos.volatility ?? 0;
+    const baseDrop = mgmtConfig.trailingDropPct;
+    const dynamicDrop = positionVol >= 4 ? baseDrop * 1.67 : baseDrop;  // 1.5% → 2.5% for vol>=4
+    if (dropFromPeak >= dynamicDrop) {
       // Fast exit: skip confirmation when drop is >= 2x threshold (dump too fast to wait)
       const fastExitMultiplier = mgmtConfig.trailingFastExitMultiplier ?? 2;
-      if (dropFromPeak >= mgmtConfig.trailingDropPct * fastExitMultiplier) {
+      if (dropFromPeak >= dynamicDrop * fastExitMultiplier) {
         return {
           action: "TRAILING_TP",
-          reason: `Trailing TP (fast): peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${(mgmtConfig.trailingDropPct * fastExitMultiplier).toFixed(1)}% fast threshold)`,
+          reason: `Trailing TP (fast): peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${(dynamicDrop * fastExitMultiplier).toFixed(1)}% fast threshold, vol=${positionVol})`,
           confirmed_recheck: true, // skip confirmation — dump is severe
         };
       }
       return {
         action: "TRAILING_TP",
-        reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${mgmtConfig.trailingDropPct}%)`,
+        reason: `Trailing TP: peak ${pos.peak_pnl_pct.toFixed(2)}% → current ${currentPnlPct.toFixed(2)}% (dropped ${dropFromPeak.toFixed(2)}% >= ${dynamicDrop.toFixed(2)}%${positionVol >= 4 ? " vol-adjusted" : ""})`,
         needs_confirmation: true,
         peak_pnl_pct: pos.peak_pnl_pct,
         current_pnl_pct: currentPnlPct,

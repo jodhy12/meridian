@@ -376,13 +376,26 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     return true;
   }));
 
+  // ── Enrich with pool memory + token stats (for scoring + LLM context) ───
+  // Lookup pool history before scoring — token-level pattern catches multi-pool tokens
+  const { getPoolMemory } = await import("../pool-memory.js");
+  for (const pool of eligible) {
+    try {
+      const mem = getPoolMemory({ pool_address: pool.pool });
+      if (mem?.known) {
+        pool._pool_memory = mem;
+        pool._token_stats = mem.token_stats || null;
+      }
+    } catch { /* non-blocking */ }
+  }
+
   // ── Score and rank candidates ────────────────────────────────
   for (const pool of eligible) {
     const smartWalletsPresent = !!(pool.kol_in_clusters || pool.smart_money_buy);
     const { score, breakdown } = scoreCandidate(pool, smartWalletsPresent);
     pool.score = score;
     pool.score_breakdown = breakdown;
-    pool.score_label = score >= 60 ? "DEPLOY" : score >= 50 ? "CAUTION" : "SKIP";
+    pool.score_label = score >= 60 ? "STRONG" : score >= 50 ? "GOOD" : score >= 35 ? "MARGINAL" : "SKIP";
   }
 
   eligible.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
@@ -659,6 +672,38 @@ export function scoreCandidate(pool, smartWalletsPresent = false) {
   const activityPts = weighted(activityRaw, "swap_count", 12);
   score += activityPts;
   breakdown.activity = `swaps=${swaps} traders=${traders} → +${activityPts}`;
+
+  // ── Pool memory factor (-15 to +8) ────────────────────────────
+  // Statistical confidence required: ≥3 samples to avoid "100% WR sample 1" prank.
+  // Token-level pattern preferred over pool-level (catches HANTA-SOL multi-pool pattern).
+  const tokenStats = pool._token_stats;  // populated by enrichment if available
+  const poolStats = pool._pool_memory;    // populated by enrichment if available
+  // Token-level priority (broader pattern across all pools sharing base_mint)
+  if (tokenStats && tokenStats.total_deploys >= 3) {
+    const wr = tokenStats.win_rate;
+    const avg = tokenStats.avg_pnl_pct ?? 0;
+    let memPts = 0;
+    if (wr >= 65 && avg > 0) memPts = 8;        // strong winner
+    else if (wr >= 55) memPts = 4;              // decent
+    else if (wr <= 30 || avg < -1) memPts = -15;// loser pattern
+    else if (wr <= 45) memPts = -8;             // weak
+    if (memPts !== 0) {
+      score += memPts;
+      breakdown.token_history = `wr=${wr}% avg=${avg.toFixed(2)}% (${tokenStats.total_deploys} deploys) → ${memPts >= 0 ? "+" : ""}${memPts}`;
+    }
+  } else if (poolStats && poolStats.adjusted_win_rate_sample_count >= 3) {
+    const wr = poolStats.adjusted_win_rate;
+    const avg = poolStats.avg_pnl_pct ?? 0;
+    let memPts = 0;
+    if (wr >= 65 && avg > 0) memPts = 5;
+    else if (wr >= 55) memPts = 2;
+    else if (wr <= 30 || avg < -1) memPts = -10;
+    else if (wr <= 45) memPts = -5;
+    if (memPts !== 0) {
+      score += memPts;
+      breakdown.pool_history = `wr=${wr}% avg=${avg.toFixed(2)}% (${poolStats.adjusted_win_rate_sample_count} samples) → ${memPts >= 0 ? "+" : ""}${memPts}`;
+    }
+  }
 
   return { score: Math.round(score), breakdown };
 }
