@@ -131,12 +131,14 @@ export function saveWeights(data) {
  */
 export function recalculateWeights(perfData, cfg = {}) {
   const darwin = cfg.darwin || {};
-  const windowDays    = darwin.windowDays    ?? 60;
-  const minSamples    = darwin.minSamples    ?? 10;
-  const boostFactor   = darwin.boostFactor   ?? 1.05;
-  const decayFactor   = darwin.decayFactor   ?? 0.95;
-  const weightFloor   = darwin.weightFloor   ?? 0.3;
-  const weightCeiling = darwin.weightCeiling ?? 2.5;
+  const windowDays      = darwin.windowDays      ?? 60;
+  const minSamples      = darwin.minSamples      ?? 10;
+  const boostFactor     = darwin.boostFactor     ?? 1.02;  // was 1.05 — slower learning
+  const decayFactor     = darwin.decayFactor     ?? 0.98;  // was 0.95 — slower learning
+  const weightFloor     = darwin.weightFloor     ?? 0.5;   // was 0.3 — tighter divergence
+  const weightCeiling   = darwin.weightCeiling   ?? 1.8;   // was 2.5 — tighter divergence
+  const liftDeadband    = darwin.liftDeadband    ?? 0.05;  // skip changes when lift signal is noisy
+  const winThresholdPct = darwin.winThresholdPct ?? 0.5;   // use pnl_pct (not pnl_usd which rounds to 0 on small positions)
 
   const data = loadWeights();
   const weights = data.weights || { ...DEFAULT_WEIGHTS };
@@ -161,9 +163,10 @@ export function recalculateWeights(perfData, cfg = {}) {
     return { changes: [], weights };
   }
 
-  // Classify wins and losses
-  const wins   = recent.filter((p) => (p.pnl_usd ?? 0) > 0);
-  const losses = recent.filter((p) => (p.pnl_usd ?? 0) <= 0);
+  // Classify wins and losses by pnl_pct (pnl_usd rounds to 0 on small positions, misclassifies winners)
+  // winThresholdPct of 0.5% filters out near-zero noise — only learn from meaningful outcomes
+  const wins   = recent.filter((p) => (p.pnl_pct ?? 0) >  winThresholdPct);
+  const losses = recent.filter((p) => (p.pnl_pct ?? 0) < -winThresholdPct);
 
   if (wins.length === 0 || losses.length === 0) {
     log("signal_weights", `Need both wins (${wins.length}) and losses (${losses.length}) to compute lift, skipping`);
@@ -190,11 +193,14 @@ export function recalculateWeights(perfData, cfg = {}) {
   const topQuartile    = new Set(ranked.slice(0, q1End).map(([name]) => name));
   const bottomQuartile = new Set(ranked.slice(q3Start).map(([name]) => name));
 
-  // Apply boosts and decays
+  // Apply boosts and decays — with deadband to ignore noisy lifts
   const changes = [];
   for (const [signal, lift] of ranked) {
     const prev = weights[signal];
     let next = prev;
+
+    // Deadband: skip when signal is too weak to act on (anti-noise)
+    if (Math.abs(lift) < liftDeadband) continue;
 
     if (topQuartile.has(signal)) {
       next = Math.min(prev * boostFactor, weightCeiling);
