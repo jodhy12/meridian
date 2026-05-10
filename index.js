@@ -527,12 +527,19 @@ export async function runManagementCycle({ silent = false } = {}) {
         actionMap.set(p.position, { action: "CLOSE", rule: 7, reason: "near-zero fees after 30 min — dead pool" });
         continue;
       }
-      // Rule 8: max hold for negative PnL — data: 5 positions held >120m while negative = -14.10% total loss
+      // Rule 8: max hold for clearly-negative PnL
+      // Original data: 5 positions held >120m while negative = -14.10% total loss
+      // Refined: noise band (-1.5%, 0%) is normal oscillation, NOT exit-worthy
+      // Also: skip if peak ≥0.5% — position has shown positive, deserve recovery time
       const maxHoldNeg = config.management.maxHoldNegativeMinutes;
+      const maxHoldNegPnlThreshold = config.management.maxHoldNegativePnlPct ?? -1.5;
+      const maxHoldNegPeakSkip = config.management.maxHoldNegativePeakSkipPct ?? 0.5;
+      const trackedPeak = tracked?.peak_pnl_pct ?? 0;
       if (!pnlSuspect && maxHoldNeg != null &&
           (p.age_minutes ?? 0) >= maxHoldNeg &&
-          (p.pnl_pct ?? 0) < 0) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 8, reason: `max hold negative: ${p.age_minutes}m > ${maxHoldNeg}m with pnl ${p.pnl_pct.toFixed(2)}%` });
+          (p.pnl_pct ?? 0) <= maxHoldNegPnlThreshold &&
+          trackedPeak < maxHoldNegPeakSkip) {
+        actionMap.set(p.position, { action: "CLOSE", rule: 8, reason: `max hold negative: ${p.age_minutes}m > ${maxHoldNeg}m with pnl ${p.pnl_pct.toFixed(2)}% <= ${maxHoldNegPnlThreshold}% (peak ${trackedPeak.toFixed(2)}% < ${maxHoldNegPeakSkip}% skip threshold)` });
         continue;
       }
       // Rule 9: max hold flat — data: ADHD 406m peak 0.25%, 我的刀盾 964m peak 0.63%, Aliens 234m peak 0.02%
