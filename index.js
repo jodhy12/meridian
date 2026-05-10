@@ -499,32 +499,48 @@ export async function runManagementCycle({ silent = false } = {}) {
           continue;
         }
       }
+      // Effective peak — used by recovery-grace guards below to avoid killing positions mid-recovery.
+      // Includes pending peak (in 15s confirmation) + current PnL (peak hasn't pushed yet) + confirmed peak.
+      const recoveryGracePeak = config.management.recoveryGracePeakPct ?? 0.5;
+      const effectivePeakPnl = Math.max(
+        tracked?.peak_pnl_pct ?? 0,
+        tracked?.pending_peak_pnl_pct ?? 0,
+        p.pnl_pct ?? 0,
+      );
+      const hasShownLife = effectivePeakPnl >= recoveryGracePeak;
+
       // Rule 5: fee yield too low AND position is losing (avoid gas-drain closes on profitable positions)
       // A profitable in-range position should keep running toward TP — closing it at 0.1% pnl costs more in gas than it gains.
+      // Recovery guard: skip if position ever showed peak ≥ recoveryGracePeakPct (likely oscillating, not dead).
       if (p.fee_per_tvl_24h != null &&
           p.fee_per_tvl_24h < config.management.minFeePerTvl24h &&
           (p.age_minutes ?? 0) >= (config.management.minAgeBeforeYieldCheck ?? 60) &&
-          (p.pnl_pct ?? 0) <= 0) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 5, reason: "low yield" });
+          (p.pnl_pct ?? 0) <= 0 &&
+          !hasShownLife) {
+        actionMap.set(p.position, { action: "CLOSE", rule: 5, reason: `low yield (peak ${effectivePeakPnl.toFixed(2)}% < ${recoveryGracePeak}%)` });
         continue;
       }
       // Rule 6: stale — IL winning with no meaningful fees (position stuck in loss)
+      // Recovery guard: skip if peak ≥1% — position had real movement, deserves recovery time.
       if (!pnlSuspect &&
           (p.age_minutes ?? 0) >= 90 &&
           (p.pnl_pct ?? 0) < -2 &&
-          (p.unclaimed_fees_usd ?? 0) < 0.05) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 6, reason: "stale — IL > fees" });
+          (p.unclaimed_fees_usd ?? 0) < 0.05 &&
+          effectivePeakPnl < 1) {
+        actionMap.set(p.position, { action: "CLOSE", rule: 6, reason: `stale — IL > fees (peak ${effectivePeakPnl.toFixed(2)}% < 1%)` });
         continue;
       }
       // Rule 7: "nyayur" check — in range but generating ~zero fees → dead pool
       // Data (May 4-7, 2026): 4 closes, 0 wins (avg PnL -0.00%) — was triggering too fast at 10m
       // Adjusted: 10m → 30m threshold to give pool time to develop fee accumulation
       // Pool genuinely dead if yield≤0.01% AND fees<0.001 sustained for 30min (not transient)
+      // Recovery guard: skip if peak ≥0.5% — pool isn't dead, it moved at some point.
       if (p.in_range &&
           (p.age_minutes ?? 0) >= 30 &&
           (p.fee_per_tvl_24h ?? -1) <= 0.01 &&
-          (p.unclaimed_fees_usd ?? 0) < 0.001) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 7, reason: "near-zero fees after 30 min — dead pool" });
+          (p.unclaimed_fees_usd ?? 0) < 0.001 &&
+          !hasShownLife) {
+        actionMap.set(p.position, { action: "CLOSE", rule: 7, reason: `near-zero fees after 30 min — dead pool (peak ${effectivePeakPnl.toFixed(2)}% < ${recoveryGracePeak}%)` });
         continue;
       }
       // Rule 8: max hold for clearly-negative PnL
@@ -543,11 +559,19 @@ export async function runManagementCycle({ silent = false } = {}) {
         continue;
       }
       // Rule 9: max hold flat — data: ADHD 406m peak 0.25%, 我的刀盾 964m peak 0.63%, Aliens 234m peak 0.02%
+      // Fix: include pending peak + current PnL — bug killed ASTEROID at +0.64% mid-recovery
+      // Tighten threshold 1.0% → 0.5% to keep catching the original dead-flat cases
       const maxHoldFlat = config.management.maxHoldFlatMinutes;
+      const flatPeakThreshold = config.management.maxHoldFlatPeakPct ?? 0.5;
+      const effectivePeak = Math.max(
+        tracked?.peak_pnl_pct ?? 0,
+        tracked?.pending_peak_pnl_pct ?? 0,
+        p.pnl_pct ?? 0,
+      );
       if (maxHoldFlat != null &&
           (p.age_minutes ?? 0) >= maxHoldFlat &&
-          (tracked?.peak_pnl_pct ?? 0) < 1) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 9, reason: `stale flat: ${p.age_minutes}m > ${maxHoldFlat}m with peak ${(tracked?.peak_pnl_pct ?? 0).toFixed(2)}%` });
+          effectivePeak < flatPeakThreshold) {
+        actionMap.set(p.position, { action: "CLOSE", rule: 9, reason: `stale flat: ${p.age_minutes}m > ${maxHoldFlat}m with effective peak ${effectivePeak.toFixed(2)}% < ${flatPeakThreshold}% (confirmed=${(tracked?.peak_pnl_pct ?? 0).toFixed(2)}%, pending=${(tracked?.pending_peak_pnl_pct ?? 0).toFixed(2)}%, current=${(p.pnl_pct ?? 0).toFixed(2)}%)` });
         continue;
       }
       // Claim rule
@@ -1404,7 +1428,7 @@ if (isTTY) {
       console.log("Open positions:");
       for (const p of positions.positions) {
         const status = p.in_range ? "in-range ✓" : "OUT OF RANGE ⚠";
-        console.log(`  ${p.pair.padEnd(16)} ${status}  fees: $${p.unclaimed_fees_usd}`);
+        console.log(`  ${p.pair.padEnd(16)} ${status}  fees: ${config.management.solMode ? "◎" : "$"}${p.unclaimed_fees_usd}`);
       }
       console.log();
     }

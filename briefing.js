@@ -23,12 +23,19 @@ export async function generateBriefing() {
 
   // 2. Performance Activity (from performance log)
   // Filter out positions held <5min (false same-cycle "wins" with no real fee accrual)
+  // Note: pnl_usd / fees_earned_usd field names are legacy — values are SOL when solMode was active at record time.
+  // Detect solMode-era entries by initial_value < 5 (real SOL deposits, not USD-era $20+ entries).
+  const solMode = config.management?.solMode;
   const perfLast24h = (lessonsData.performance || []).filter(p =>
     new Date(p.recorded_at) > last24h && (p.minutes_held ?? 0) >= 5
   );
-  const totalPnL = perfLast24h.reduce((sum, p) => sum + (p.pnl_usd || 0), 0);
-  const totalFees = perfLast24h.reduce((sum, p) => sum + (p.fees_earned_usd || 0), 0);
-  const cur = config.management?.solMode ? "◎" : "$";
+  const perfForCurrency = solMode
+    ? perfLast24h.filter(p => (p.initial_value_usd ?? 0) < 5)
+    : perfLast24h.filter(p => (p.initial_value_usd ?? 0) >= 5);
+  // Use pnl_pct × initial_value (pnl_usd rounds to 0 on small positions, totals understate true PnL)
+  const totalPnL = perfForCurrency.reduce((sum, p) => sum + ((p.pnl_pct ?? 0) / 100) * (p.initial_value_usd ?? 0), 0);
+  const totalFees = perfForCurrency.reduce((sum, p) => sum + (p.fees_earned_usd || 0), 0);
+  const cur = solMode ? "◎" : "$";
 
   // 3. Lessons Learned
   const lessonsLast24h = (lessonsData.lessons || []).filter(l => new Date(l.created_at) > last24h);
@@ -49,7 +56,7 @@ export async function generateBriefing() {
     `💰 Net PnL: ${totalPnL >= 0 ? "+" : ""}${cur}${totalPnL.toFixed(4)}`,
     `💎 Fees Earned: ${cur}${totalFees.toFixed(4)}`,
     perfLast24h.length > 0
-      ? `📈 Win Rate (24h): ${Math.round((perfLast24h.filter(p => p.pnl_usd > 0).length / perfLast24h.length) * 100)}% (${perfLast24h.length} positions ≥5min)`
+      ? `📈 Win Rate (24h): ${Math.round((perfLast24h.filter(p => (p.pnl_pct ?? 0) > 0).length / perfLast24h.length) * 100)}% (${perfLast24h.length} positions ≥5min)`
       : "📈 Win Rate (24h): N/A",
     "",
     `<b>Lessons Learned:</b>`,
@@ -60,7 +67,7 @@ export async function generateBriefing() {
     `<b>Current Portfolio:</b>`,
     `📂 Open Positions: ${openPositions.length}`,
     perfSummary
-      ? `📊 All-time PnL: ${cur}${perfSummary.total_pnl_usd.toFixed(4)} (${perfSummary.win_rate_pct}% win)`
+      ? `📊 All-time PnL: ${cur}${perfSummary.total_pnl_usd.toFixed(4)} (${perfSummary.win_rate_pct}% win, ${perfSummary.total_positions_closed} closed)`
       : "",
     "────────────────"
   ];

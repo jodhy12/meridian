@@ -161,7 +161,7 @@ export function recordClaim(position_address, fees_usd) {
   if (!pos) return;
   pos.last_claim_at = new Date().toISOString();
   pos.total_fees_claimed_usd = (pos.total_fees_claimed_usd || 0) + (fees_usd || 0);
-  pos.notes.push(`Claimed ~$${fees_usd?.toFixed(2) || "?"} fees at ${pos.last_claim_at}`);
+  pos.notes.push(`Claimed ~${fees_usd?.toFixed(4) || "?"} fees at ${pos.last_claim_at}`);
   save(state);
 }
 
@@ -507,10 +507,10 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     }
   }
 
-  // ── Flat exit (no movement, no fees, no trailing) ──────────────
+  // ── Flat exit (no movement, no fees, no trailing, never had peak) ──
   // Free up capital from dead positions: in-range but no swap volume → no fees → no PnL.
   // Conservative defaults so we don't kill positions that are about to move.
-  // Skips: pos with trailing_active (has momentum), pos out of range (OOR rule handles it).
+  // Skips: trailing_active (momentum), OOR (own rule), or position that ever showed movement (peak ≥0.5%).
   if (
     !pos.trailing_active &&
     !pos.out_of_range_since &&
@@ -521,8 +521,18 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     const flatMinAge = mgmtConfig.flatExitMinAgeMin ?? 120;
     const flatMaxFeeYield = mgmtConfig.flatExitMaxFeeYieldPct ?? 0.3;
     const flatPnlBand = mgmtConfig.flatExitPnlBandPct ?? 1.0;
+    const flatPeakSkip = mgmtConfig.flatExitPeakSkipPct ?? 0.5;
+    const effectivePeak = Math.max(
+      pos.peak_pnl_pct ?? 0,
+      pos.pending_peak_pnl_pct ?? 0,
+      currentPnlPct,
+    );
     const ageMin = (Date.now() - new Date(pos.deployed_at).getTime()) / 60000;
-    if (ageMin >= flatMinAge && Math.abs(currentPnlPct) < flatPnlBand) {
+    if (
+      ageMin >= flatMinAge &&
+      Math.abs(currentPnlPct) < flatPnlBand &&
+      effectivePeak < flatPeakSkip
+    ) {
       const initialValue = mgmtConfig.solMode ? pos.amount_sol : pos.initial_value_usd;
       const totalFees = (positionData.collected_fees_usd ?? 0) + (positionData.unclaimed_fees_usd ?? 0);
       if (initialValue > 0) {
@@ -530,7 +540,7 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
         if (feeYieldPct < flatMaxFeeYield) {
           return {
             action: "FLAT_EXIT",
-            reason: `Flat exit: age ${Math.round(ageMin)}m, PnL ${currentPnlPct.toFixed(2)}% (band ±${flatPnlBand}%), fee yield ${feeYieldPct.toFixed(3)}% < ${flatMaxFeeYield}% — dead position, redeploy capital`,
+            reason: `Flat exit: age ${Math.round(ageMin)}m, PnL ${currentPnlPct.toFixed(2)}%, peak ${effectivePeak.toFixed(2)}% < ${flatPeakSkip}%, fee yield ${feeYieldPct.toFixed(3)}% < ${flatMaxFeeYield}% — dead position, redeploy capital`,
           };
         }
       }
@@ -551,14 +561,22 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
   // ── Low yield (only after position has had time to accumulate fees) ───
   // Skip low-yield close when PnL is positive — profitable positions should keep running toward TP.
   // Data: 3 of 7 winners needed 200+ min to hit TP (Iroha 498m, Moritz 283m, Neukgu 273m).
+  // Recovery guard: skip if position ever showed peak ≥ recoveryGracePeakPct (likely oscillating, not dead).
   const { age_minutes } = positionData;
   const minAgeForYieldCheck = mgmtConfig.minAgeBeforeYieldCheck ?? 60;
+  const recoveryGracePeakPct = mgmtConfig.recoveryGracePeakPct ?? 0.5;
+  const lowYieldEffectivePeak = Math.max(
+    pos.peak_pnl_pct ?? 0,
+    pos.pending_peak_pnl_pct ?? 0,
+    currentPnlPct ?? 0,
+  );
   if (
     fee_per_tvl_24h != null &&
     mgmtConfig.minFeePerTvl24h != null &&
     fee_per_tvl_24h < mgmtConfig.minFeePerTvl24h &&
     (age_minutes == null || age_minutes >= minAgeForYieldCheck) &&
-    (currentPnlPct == null || currentPnlPct <= 0)
+    (currentPnlPct == null || currentPnlPct <= 0) &&
+    lowYieldEffectivePeak < recoveryGracePeakPct
   ) {
     return {
       action: "LOW_YIELD",

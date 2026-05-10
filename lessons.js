@@ -870,8 +870,11 @@ export function getPerformanceHistory({ hours = 24, limit = 50 } = {}) {
       closed_at: r.recorded_at,
     }));
 
-  const totalPnl = filtered.reduce((s, r) => s + (r.pnl_usd ?? 0), 0);
-  const wins = filtered.filter((r) => r.pnl_usd > 0).length;
+  // Use pnl_pct for WR (pnl_usd rounds to 0 on small positions, misclassifies winners)
+  // Sum pnl by SOL-era detection (initial_value < 5 = SOL deposit, >= 5 = USD-era legacy)
+  const solEra = filtered.filter((r) => (r.fees_earned_usd ?? 0) < 5 && (r.pnl_pct ?? 0) > -100);
+  const totalPnl = solEra.reduce((s, r) => s + (r.pnl_usd ?? 0), 0);
+  const wins = filtered.filter((r) => (r.pnl_pct ?? 0) > 0).length;
 
   return {
     hours,
@@ -891,10 +894,15 @@ export function getPerformanceSummary() {
 
   if (p.length === 0) return null;
 
-  const totalPnl = p.reduce((s, x) => s + x.pnl_usd, 0);
-  const avgPnlPct = p.reduce((s, x) => s + x.pnl_pct, 0) / p.length;
-  const avgRangeEfficiency = p.reduce((s, x) => s + x.range_efficiency, 0) / p.length;
-  const wins = p.filter((x) => x.pnl_usd > 0).length;
+  // Filter SOL-era only for total_pnl aggregation (mixed USD/SOL data otherwise meaningless).
+  // SOL-era detection: initial_value < 5 (real SOL deposits, not USD-era $20+ entries).
+  // Use pnl_pct × initial_value (pnl_usd rounds to 0 on small positions, totals understate true PnL)
+  const solEra = p.filter((x) => (x.initial_value_usd ?? 0) < 5);
+  const totalPnl = solEra.reduce((s, x) => s + ((x.pnl_pct ?? 0) / 100) * (x.initial_value_usd ?? 0), 0);
+  const avgPnlPct = p.reduce((s, x) => s + (x.pnl_pct ?? 0), 0) / p.length;
+  const avgRangeEfficiency = p.reduce((s, x) => s + (x.range_efficiency ?? 0), 0) / p.length;
+  // WR uses pnl_pct (pnl_usd rounds to 0 on small positions, misclassifies winners — same bug as signal-weights)
+  const wins = p.filter((x) => (x.pnl_pct ?? 0) > 0).length;
 
   return {
     total_positions_closed: p.length,
