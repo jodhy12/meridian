@@ -592,7 +592,8 @@ async function runSafetyChecks(name, args) {
           const wasLoss = p.notes?.some(n =>
             n.includes("IL stop") || n.includes("stop loss") || n.includes("stale") ||
             n.includes("low yield") || n.includes("dead pool") || n.includes("no fees") ||
-            n.includes("Early IL") || n.includes("max hold") || n.includes("OOR")
+            n.includes("Early IL") || n.includes("max hold") || n.includes("OOR") ||
+            n.includes("Flat exit")
           );
           const peakLow = (p.peak_pnl_pct ?? 0) < 1;
           return wasLoss || peakLow;

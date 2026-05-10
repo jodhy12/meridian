@@ -507,6 +507,36 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
     }
   }
 
+  // ── Flat exit (no movement, no fees, no trailing) ──────────────
+  // Free up capital from dead positions: in-range but no swap volume → no fees → no PnL.
+  // Conservative defaults so we don't kill positions that are about to move.
+  // Skips: pos with trailing_active (has momentum), pos out of range (OOR rule handles it).
+  if (
+    !pos.trailing_active &&
+    !pos.out_of_range_since &&
+    !pnl_pct_suspicious &&
+    pos.deployed_at &&
+    currentPnlPct != null
+  ) {
+    const flatMinAge = mgmtConfig.flatExitMinAgeMin ?? 120;
+    const flatMaxFeeYield = mgmtConfig.flatExitMaxFeeYieldPct ?? 0.3;
+    const flatPnlBand = mgmtConfig.flatExitPnlBandPct ?? 1.0;
+    const ageMin = (Date.now() - new Date(pos.deployed_at).getTime()) / 60000;
+    if (ageMin >= flatMinAge && Math.abs(currentPnlPct) < flatPnlBand) {
+      const initialValue = mgmtConfig.solMode ? pos.amount_sol : pos.initial_value_usd;
+      const totalFees = (positionData.collected_fees_usd ?? 0) + (positionData.unclaimed_fees_usd ?? 0);
+      if (initialValue > 0) {
+        const feeYieldPct = (totalFees / initialValue) * 100;
+        if (feeYieldPct < flatMaxFeeYield) {
+          return {
+            action: "FLAT_EXIT",
+            reason: `Flat exit: age ${Math.round(ageMin)}m, PnL ${currentPnlPct.toFixed(2)}% (band ±${flatPnlBand}%), fee yield ${feeYieldPct.toFixed(3)}% < ${flatMaxFeeYield}% — dead position, redeploy capital`,
+          };
+        }
+      }
+    }
+  }
+
   // ── Out of range too long ──────────────────────────────────────
   if (pos.out_of_range_since) {
     const minutesOOR = Math.floor((Date.now() - new Date(pos.out_of_range_since).getTime()) / 60000);
