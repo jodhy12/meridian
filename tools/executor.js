@@ -408,9 +408,16 @@ export async function executeTool(name, args) {
 
     if (!args.bins_below || args.bins_below <= 0) {
       const vol = snap.volatility ?? args.volatility ?? 3;
-      // Narrow bins matched to aggressive -7% stop loss strategy
-      args.bins_below = Math.round(Math.min(Math.max(15 + (vol / 5) * 15, 15), 30));
-      log("executor", `Auto-filled bins_below=${args.bins_below} (volatility: ${vol})`);
+      // Data-backed: narrow ≤15 bins_below is THE only positive-net bucket (+◎0.0071/close)
+      // Medium 26-40 bucket = biggest loser (-◎0.0029/close). Force narrow band.
+      // Light vol scaling: low vol → 10 bins, high vol → 15 bins. Total range [10, 15].
+      args.bins_below = Math.round(Math.min(Math.max(10 + (vol / 5) * 5, 10), 15));
+      log("executor", `Auto-filled bins_below=${args.bins_below} (volatility: ${vol}, narrow strategy)`);
+    } else if (args.bins_below > (config.management.maxBinsBelow ?? 15)) {
+      // Hard cap LLM-suggested wide ranges (data: 26+ bins is losing strategy)
+      const capped = config.management.maxBinsBelow ?? 15;
+      log("executor", `Clamped LLM bins_below ${args.bins_below} → ${capped} (narrow strategy enforced)`);
+      args.bins_below = capped;
     }
     if (!args.bins_above || args.bins_above <= 0) {
       // Match bins_above proportionally — narrower bins_below means narrower bins_above too
