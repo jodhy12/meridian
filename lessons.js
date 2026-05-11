@@ -886,6 +886,35 @@ export function getPerformanceHistory({ hours = 24, limit = 50 } = {}) {
 }
 
 /**
+ * Compute rolling average PnL% over last N days. Used for pause-and-learn mode.
+ * Returns { avgPnlPct, totalPnlSol, sampleSize } — null if no data.
+ */
+export function getRollingPnl({ windowDays = 5, minSamples = 5 } = {}) {
+  const data = load();
+  const cutoff = new Date(Date.now() - windowDays * 86400000).toISOString();
+  const recent = (data.performance || []).filter((r) => (r.recorded_at || "") >= cutoff);
+  if (recent.length < minSamples) return null;
+  const avgPnlPct = recent.reduce((s, r) => s + (r.pnl_pct ?? 0), 0) / recent.length;
+  const totalPnlSol = recent.reduce(
+    (s, r) => s + ((r.pnl_pct ?? 0) / 100) * (r.initial_value_usd ?? 0),
+    0
+  );
+  return { avgPnlPct, totalPnlSol, sampleSize: recent.length };
+}
+
+/**
+ * Get count of recent losing closes within window. Used for consecutive-loss cooldown (P5).
+ * A "loss" = pnl_pct <= lossThresholdPct (default -0.5%, ignores noise).
+ */
+export function getRecentLossCount({ windowMs = 3600000, lossThresholdPct = -0.5 } = {}) {
+  const data = load();
+  const cutoff = new Date(Date.now() - windowMs).toISOString();
+  const recent = (data.performance || []).filter((r) => (r.recorded_at || "") >= cutoff);
+  const losses = recent.filter((r) => (r.pnl_pct ?? 0) <= lossThresholdPct);
+  return { total: recent.length, losses: losses.length, lastLossAt: losses[losses.length - 1]?.recorded_at ?? null };
+}
+
+/**
  * Get performance stats summary.
  */
 export function getPerformanceSummary() {

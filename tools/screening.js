@@ -574,11 +574,18 @@ export function scoreCandidate(pool, smartWalletsPresent = false) {
   const devSoldAll = tags.includes("dev_sold_all") || pool.dev_sold_all;
   const smartMoneyBuy = tags.includes("smart_money_buy") || pool.smart_money_buy;
   const kolPresent = pool.kol_in_clusters;
-  const swPts = smartWalletsPresent ? weighted(8, "smart_wallets_present", 8) : 0;
+  // P4: boost smart-wallets weight (8→12) + cap 15→18 to give alpha-follow more leverage
+  const swPts = smartWalletsPresent ? weighted(12, "smart_wallets_present", 12) : 0;
   const onChainPts = (devSoldAll ? 2 : 0) + (smartMoneyBuy ? 4 : 0) + (kolPresent ? 4 : 0);
-  const signalPts = Math.min(15, swPts + onChainPts); // STACKED, capped at 15
+  let signalPts = Math.min(18, swPts + onChainPts); // STACKED, capped at 18
+  // P4: mild penalty if mature pool (>2h) has zero smart-wallet activity — likely retail dump
+  const tokenAgeHrs = Number(pool.token_age_hours || 0);
+  if (!smartWalletsPresent && !smartMoneyBuy && !kolPresent && tokenAgeHrs >= 2) {
+    signalPts -= 6;
+    breakdown.smart_signal_drought = `mature (${tokenAgeHrs}h) with no smart activity → -6`;
+  }
   score += signalPts;
-  breakdown.smart_signals = `sw=${smartWalletsPresent} okx_smart=${smartMoneyBuy} kol=${kolPresent} dev_sold=${devSoldAll} → +${signalPts}`;
+  breakdown.smart_signals = `sw=${smartWalletsPresent} okx_smart=${smartMoneyBuy} kol=${kolPresent} dev_sold=${devSoldAll} → ${signalPts >= 0 ? "+" : ""}${signalPts}`;
 
   // ── Token age (gradual scaling, 0-7 pts) ─────────────────────
   // FIX: was binary jumps (0/3/5). Now gradual: log-scale up to 30d.

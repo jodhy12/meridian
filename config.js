@@ -156,14 +156,28 @@ export const config = {
  *   3.0 SOL wallet → 0.98 SOL deploy
  *   4.0 SOL wallet → 1.33 SOL deploy
  */
-export function computeDeployAmount(walletSol) {
+export function computeDeployAmount(walletSol, score = null) {
   const reserve  = config.management.gasReserve      ?? 0.2;
   const pct      = config.management.positionSizePct ?? 0.35;
   const floor    = config.management.deployAmountSol;
   const ceil     = config.risk.maxDeployAmount;
   const deployable = Math.max(0, walletSol - reserve);
-  const dynamic    = deployable * pct;
-  const result     = Math.min(ceil, Math.max(floor, dynamic));
+  let dynamic    = deployable * pct;
+
+  // Confidence-based sizing: scale by conviction score.
+  // Data-driven: high-score pools historically outperform — bet bigger when edge is clearer.
+  if (config.management.sizingByScore && score != null) {
+    const tiers = config.management.scoreSizingTiers || [
+      { minScore: 80, multiplier: 1.7 },
+      { minScore: 65, multiplier: 1.4 },
+      { minScore: 50, multiplier: 1.0 },
+      { minScore: 35, multiplier: 0.6 },
+    ];
+    const tier = tiers.find((t) => score >= t.minScore);
+    if (tier) dynamic *= tier.multiplier;
+  }
+
+  const result   = Math.min(ceil, Math.max(floor, dynamic));
   return parseFloat(result.toFixed(2));
 }
 

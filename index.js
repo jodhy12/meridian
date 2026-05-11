@@ -546,16 +546,28 @@ export async function runManagementCycle({ silent = false } = {}) {
       // Rule 8: max hold for clearly-negative PnL
       // Original data: 5 positions held >120m while negative = -14.10% total loss
       // Refined: noise band (-1.5%, 0%) is normal oscillation, NOT exit-worthy
-      // Also: skip if peak ≥0.5% — position has shown positive, deserve recovery time
+      // Lost-gains guard: if position had real peak (≥1%) but now lost ≥half, close — don't wait for IL stop
+      // (Data 2026-05-11: WOJAK held 252m peak-to-IL-stop -7.10%, HANTA held 137m -7.52% — recovery never came)
       const maxHoldNeg = config.management.maxHoldNegativeMinutes;
       const maxHoldNegPnlThreshold = config.management.maxHoldNegativePnlPct ?? -1.5;
-      const maxHoldNegPeakSkip = config.management.maxHoldNegativePeakSkipPct ?? 0.5;
       const trackedPeak = tracked?.peak_pnl_pct ?? 0;
       if (!pnlSuspect && maxHoldNeg != null &&
           (p.age_minutes ?? 0) >= maxHoldNeg &&
-          (p.pnl_pct ?? 0) <= maxHoldNegPnlThreshold &&
-          trackedPeak < maxHoldNegPeakSkip) {
-        actionMap.set(p.position, { action: "CLOSE", rule: 8, reason: `max hold negative: ${p.age_minutes}m > ${maxHoldNeg}m with pnl ${p.pnl_pct.toFixed(2)}% <= ${maxHoldNegPnlThreshold}% (peak ${trackedPeak.toFixed(2)}% < ${maxHoldNegPeakSkip}% skip threshold)` });
+          (p.pnl_pct ?? 0) <= maxHoldNegPnlThreshold) {
+        actionMap.set(p.position, { action: "CLOSE", rule: 8, reason: `max hold negative: ${p.age_minutes}m > ${maxHoldNeg}m with pnl ${p.pnl_pct.toFixed(2)}% <= ${maxHoldNegPnlThreshold}% (peak was ${trackedPeak.toFixed(2)}%)` });
+        continue;
+      }
+      // Rule 8b: lost gains — peak was real (≥1%) but position fully reversed (current ≤ -peak)
+      // Catches WOJAK/HANTA pattern: pumped to +X%, slid down for hours, hit IL stop at -7%
+      // Triggers when total swing = 2× peak (peak +1.5% → close at -1.5%) — clear reversal, not noise
+      // Avoids overlap with trailing TP (only activates peak ≥2%, so 8b handles 1-2% peak range)
+      const lostGainsPeakMin = config.management.lostGainsPeakMinPct ?? 1.0;
+      const lostGainsMinAge = config.management.lostGainsMinAgeMin ?? 30;
+      if (!pnlSuspect && p.pnl_pct != null &&
+          (p.age_minutes ?? 0) >= lostGainsMinAge &&
+          trackedPeak >= lostGainsPeakMin &&
+          (p.pnl_pct ?? 0) <= -trackedPeak) {
+        actionMap.set(p.position, { action: "CLOSE", rule: "8b", reason: `lost gains: peak ${trackedPeak.toFixed(2)}% → current ${p.pnl_pct.toFixed(2)}% (full reversal, ${p.age_minutes}m old)` });
         continue;
       }
       // Rule 9: max hold flat — data: ADHD 406m peak 0.25%, 我的刀盾 964m peak 0.63%, Aliens 234m peak 0.02%

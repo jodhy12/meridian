@@ -11,8 +11,8 @@ import {
 } from "./dlmm.js";
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
-import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons } from "../lessons.js";
-import { setPositionInstruction, getTrackedPositions, getTrackedPosition } from "../state.js";
+import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons, getRecentLossCount, getRollingPnl } from "../lessons.js";
+import { setPositionInstruction, getTrackedPositions, getTrackedPosition, getPauseRemainingMs, setPauseUntil } from "../state.js";
 import { computeDeployAmount } from "../config.js";
 
 import { getPoolMemory, addPoolNote } from "../pool-memory.js";
@@ -396,8 +396,10 @@ export async function executeTool(name, args) {
     if (!args.amount_y && !args.amount_sol) {
       const bal = await getWalletBalances().catch(() => null);
       const walletSol = bal?.sol ?? 0;
-      args.amount_y = computeDeployAmount(walletSol);
-      log("executor", `Auto-filled amount_y=${args.amount_y} SOL (wallet: ${walletSol})`);
+      // Pass pool score for confidence-based sizing (P1)
+      const poolScore = snap?.score ?? args.signal_snapshot?.score ?? null;
+      args.amount_y = computeDeployAmount(walletSol, poolScore);
+      log("executor", `Auto-filled amount_y=${args.amount_y} SOL (wallet: ${walletSol}, score: ${poolScore ?? "n/a"})`);
     }
     // Normalize: ensure amount_y is set (some LLMs send amount_sol instead)
     if (!args.amount_y && args.amount_sol) {
@@ -540,6 +542,58 @@ async function runSafetyChecks(name, args) {
           pass: false,
           reason: `bin_step ${args.bin_step} is outside the allowed range of [${minStep}-${maxStep}].`,
         };
+      }
+
+      // Pause-and-learn mode: if rolling PnL negative over window, pause deploys for cooldown
+      // Prevents bleeding capital during adverse market regimes.
+      if (config.management.pauseLearnEnabled !== false) {
+        const pauseMs = getPauseRemainingMs();
+        if (pauseMs > 0) {
+          const remainingHr = Math.ceil(pauseMs / 3600000);
+          return {
+            pass: false,
+            reason: `Pause-and-learn active: bot paused ${remainingHr}h more (rolling PnL went negative). Resume manual or wait timer.`,
+          };
+        }
+        // Check rolling window — activate pause if avgPnL below threshold
+        const winDays = config.management.pauseLearnWindowDays ?? 5;
+        const minSamples = config.management.pauseLearnMinSamples ?? 10;
+        const minAvgPnl = config.management.pauseLearnMinAvgPnlPct ?? 0.0;
+        const durationHrs = config.management.pauseLearnDurationHours ?? 24;
+        const rolling = getRollingPnl({ windowDays: winDays, minSamples });
+        if (rolling && rolling.avgPnlPct < minAvgPnl) {
+          const until = new Date(Date.now() + durationHrs * 3600000).toISOString();
+          const reason = `Rolling ${winDays}d PnL ${rolling.avgPnlPct.toFixed(2)}% < ${minAvgPnl}% threshold over ${rolling.sampleSize} closes (net ◎${rolling.totalPnlSol.toFixed(4)})`;
+          setPauseUntil(until, reason);
+          return {
+            pass: false,
+            reason: `Pause-and-learn activated: ${reason}. Bot paused ${durationHrs}h to avoid bleed. Review strategy.`,
+          };
+        }
+      }
+
+      // Consecutive-loss cooldown (P5): pause deploys after multiple losses in short window
+      // Likely macro regime change (SOL dump → all memecoins dump) — wait for market to settle
+      const lossThreshold = config.management.consecutiveLossThreshold ?? 3;
+      const lossWindowMin = config.management.consecutiveLossWindowMin ?? 60;
+      const lossPctCutoff = config.management.consecutiveLossPctCutoff ?? -0.5;
+      if (lossThreshold > 0) {
+        const lossInfo = getRecentLossCount({
+          windowMs: lossWindowMin * 60000,
+          lossThresholdPct: lossPctCutoff,
+        });
+        if (lossInfo.losses >= lossThreshold) {
+          const cooldownMin = config.management.consecutiveLossCooldownMin ?? 30;
+          const lastLossMs = lossInfo.lastLossAt ? Date.parse(lossInfo.lastLossAt) : 0;
+          const cooldownEndsMs = lastLossMs + cooldownMin * 60000;
+          if (Date.now() < cooldownEndsMs) {
+            const remainingMin = Math.ceil((cooldownEndsMs - Date.now()) / 60000);
+            return {
+              pass: false,
+              reason: `Consecutive loss cooldown: ${lossInfo.losses} losses in ${lossWindowMin}m — pausing ${remainingMin}m more. Market regime may be dumping; let it settle.`,
+            };
+          }
+        }
       }
 
       // Check position count limit + duplicate pool guard — force fresh scan to avoid stale cache

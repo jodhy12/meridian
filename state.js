@@ -179,6 +179,35 @@ function pushEvent(state, event) {
 /**
  * Mark a position as closed.
  */
+/**
+ * Pause-and-learn mode: prevent new deploys for given duration. Used when rolling PnL is negative.
+ * Returns ms remaining if paused, 0 if not.
+ */
+export function getPauseRemainingMs() {
+  const state = load();
+  const until = state._pausedUntil;
+  if (!until) return 0;
+  const ms = new Date(until).getTime() - Date.now();
+  return ms > 0 ? ms : 0;
+}
+
+export function setPauseUntil(iso, reason = null) {
+  const state = load();
+  state._pausedUntil = iso;
+  state._pausedReason = reason;
+  state._pausedAt = new Date().toISOString();
+  save(state);
+  log("state", `Bot paused until ${iso}: ${reason ?? "no reason"}`);
+}
+
+export function clearPause() {
+  const state = load();
+  state._pausedUntil = null;
+  state._pausedReason = null;
+  state._pausedAt = null;
+  save(state);
+}
+
 export function recordClose(position_address, reason) {
   const state = load();
   const pos = state.positions[position_address];
