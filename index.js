@@ -1062,7 +1062,7 @@ Fee/TVL: <x>% | Vol: $<x> | Organic: <x>
 On no deploy:
 ⛔ <best name> (score=<x>) — <reason in a few words>
 Skipped: <comma list>
-`, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048, {
+`, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, config.llm.screeningMaxTokens ?? 4096, {
       onToolStart:  async ({ name })                 => { await liveMessage?.toolStart(name); },
       onToolFinish: async ({ name, result, success }) => {
         if (name === "deploy_position" && success && result?.success !== false) deploySucceeded = true;
