@@ -13,23 +13,27 @@ import { log } from "../logger.js";
 const HAS_GMGN = !!process.env.GMGN_API_KEY;
 const HAS_OKX  = !!process.env.OKX_API_KEY;
 
-let provider = null;
+let providerPromise = null;
 let providerName = "none";
 
-async function getProvider() {
-  if (provider) return provider;
-  if (HAS_GMGN) {
-    provider = await import("./gmgn.js");
-    providerName = "gmgn";
-  } else if (HAS_OKX) {
-    provider = await import("./okx.js");
-    providerName = "okx";
-  } else {
-    provider = null;
-    providerName = "none";
-  }
-  log("enrichment", `Provider initialized: ${providerName}`);
-  return provider;
+function getProvider() {
+  // Cache the PROMISE (not resolved value) so parallel calls share one init
+  if (providerPromise) return providerPromise;
+  providerPromise = (async () => {
+    let p = null;
+    if (HAS_GMGN) {
+      p = await import("./gmgn.js");
+      providerName = "gmgn";
+    } else if (HAS_OKX) {
+      p = await import("./okx.js");
+      providerName = "okx";
+    } else {
+      providerName = "none";
+    }
+    log("enrichment", `Provider initialized: ${providerName}`);
+    return p;
+  })();
+  return providerPromise;
 }
 
 const NULL_RESULT = {

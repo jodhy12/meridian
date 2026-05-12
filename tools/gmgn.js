@@ -20,11 +20,16 @@ const CHAIN_SOLANA = "sol";
 const CLIENT_PREFIX = "meridian";
 
 const GMGN_API_KEY = process.env.GMGN_API_KEY || "";
-const REQUEST_DELAY_MS = 350;  // throttle between requests (GMGN strict on rate limits)
-const CACHE_TTL_MS = 10 * 60 * 1000;  // cache responses 10min per token+endpoint
+const REQUEST_DELAY_MS = 500;   // serial gap between requests (GMGN strict; 350ms still triggered ban)
+const CACHE_TTL_MS = 10 * 60 * 1000;  // cache 10 min per token+endpoint
+const NEG_CACHE_TTL_MS = 60 * 1000;   // failed lookups cached 1 min (don't hammer same broken token)
 
 const cache = new Map();  // key=`${path}:${address}` → { data, expiresAt }
-let lastRequestAt = 0;
+let bannedUntil = 0;       // timestamp until rate-limit ban expires (server-side reset_at)
+
+// Serial request queue — guarantees only ONE in-flight request at a time
+// regardless of how many parallel callers. Prevents race condition on lastRequestAt.
+let requestQueue = Promise.resolve();
 
 function isAvailable() {
   return !!GMGN_API_KEY;
@@ -34,25 +39,12 @@ function genClientId() {
   return `${CLIENT_PREFIX}_${crypto.randomBytes(8).toString("hex")}`;
 }
 
-async function throttle() {
-  const elapsed = Date.now() - lastRequestAt;
-  if (elapsed < REQUEST_DELAY_MS) {
-    await new Promise(r => setTimeout(r, REQUEST_DELAY_MS - elapsed));
+async function executeRequest(path, params) {
+  // Honor server-side ban — fail fast until reset
+  if (Date.now() < bannedUntil) {
+    const waitS = Math.ceil((bannedUntil - Date.now()) / 1000);
+    throw new Error(`GMGN banned for ${waitS}s more (skipping)`);
   }
-  lastRequestAt = Date.now();
-}
-
-async function gmgnGet(path, params = {}) {
-  if (!isAvailable()) throw new Error("GMGN_API_KEY not configured");
-
-  // Cache check (key = path + address)
-  const cacheKey = `${path}:${params.address || ""}`;
-  const cached = cache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.data;
-  }
-
-  await throttle();
 
   const ts = Math.floor(Date.now() / 1000);
   const allParams = { ...params, timestamp: ts, client_id: genClientId() };
@@ -68,16 +60,55 @@ async function gmgnGet(path, params = {}) {
   });
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
+    // Parse rate limit reset to set bannedUntil
+    if (res.status === 429) {
+      try {
+        const j = JSON.parse(txt);
+        if (j.reset_at) bannedUntil = j.reset_at * 1000;
+        else bannedUntil = Date.now() + 60_000;  // default 1min back-off
+      } catch {
+        bannedUntil = Date.now() + 60_000;
+      }
+    }
     throw new Error(`GMGN ${res.status}: ${path} — ${txt.slice(0, 100)}`);
   }
   const json = await res.json();
   if (json.code !== 0) {
-    // 429 retry/backoff handled at caller level; just surface error
     throw new Error(`GMGN ${json.error || json.code}: ${json.message || "unknown"} (${path})`);
   }
-
-  cache.set(cacheKey, { data: json.data, expiresAt: Date.now() + CACHE_TTL_MS });
   return json.data;
+}
+
+async function gmgnGet(path, params = {}) {
+  if (!isAvailable()) throw new Error("GMGN_API_KEY not configured");
+
+  // Cache check first — no queueing needed
+  const cacheKey = `${path}:${params.address || ""}`;
+  const cached = cache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    if (cached.error) throw cached.error;
+    return cached.data;
+  }
+
+  // Enqueue: only one request executes at a time, with REQUEST_DELAY_MS gap
+  const task = requestQueue.then(async () => {
+    try {
+      const data = await executeRequest(path, params);
+      cache.set(cacheKey, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+      return data;
+    } catch (err) {
+      // Negative cache so we don't retry-spam broken tokens
+      cache.set(cacheKey, { error: err, expiresAt: Date.now() + NEG_CACHE_TTL_MS });
+      throw err;
+    } finally {
+      // Spacing: sleep AFTER each request before next dequeues
+      await new Promise(r => setTimeout(r, REQUEST_DELAY_MS));
+    }
+  });
+
+  // Replace queue with task that ignores errors (so chain doesn't break)
+  requestQueue = task.catch(() => {});
+  return task;
 }
 
 const num = (v) => v != null && v !== "" ? parseFloat(v) : null;
