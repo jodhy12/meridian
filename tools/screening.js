@@ -213,9 +213,9 @@ export async function getTopCandidates({ limit = 10 } = {}) {
     .slice(0, limit);
 
   // enrichPvpRisk removed — PVP data surfaced via LLM judgment from pool metrics
-  // Enrich with OKX data — advanced info (risk/bundle/sniper) + ATH price (no API key required)
+  // Enrich token data via unified provider (GMGN > OKX > none, picks based on env)
   if (eligible.length > 0) {
-    const { getAdvancedInfo, getPriceInfo, getClusterList, getRiskFlags } = await import("./okx.js");
+    const { getAdvancedInfo, getPriceInfo, getClusterList, getRiskFlags } = await import("./enrichment.js");
     const okxResults = await Promise.allSettled(
       eligible.map(async (p) => {
         if (!p.base?.mint) return { adv: null, price: null, clusters: [], risk: null };

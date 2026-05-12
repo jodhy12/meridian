@@ -40,3 +40,5 @@ discord-signals.json
 # Encryption key
 .envrypt
 .env.raw
+
+*.pem

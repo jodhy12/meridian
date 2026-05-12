@@ -58,9 +58,9 @@ export async function getTokenInfo({ query }) {
     stats_24h_net_buyers: t.stats24h ? t.stats24h.numNetBuyers : null, // keep only net buyer direction
   }));
 
-  // Enrich first result with OKX smart money + risk data (public endpoint, no key needed)
+  // Enrich first result via unified provider (GMGN > OKX > none, picks based on env)
   if (results[0]?.mint) {
-    const { getAdvancedInfo, getClusterList } = await import("./okx.js");
+    const { getAdvancedInfo, getClusterList } = await import("./enrichment.js");
     const [adv, clusters] = await Promise.all([
       getAdvancedInfo(results[0].mint).catch(() => null),
       getClusterList(results[0].mint).catch(() => []),
@@ -124,8 +124,8 @@ export async function getTokenHolders({ mint, limit = 20 }) {
   const realHolders = mapped.filter((h) => !h.is_pool);
   const top10Pct = realHolders.slice(0, 10).reduce((s, h) => s + (Number(h.pct) || 0), 0);
 
-  // ─── Bundle / Cluster Analysis (OKX) ─────────────────────────
-  const { getAdvancedInfo, getClusterList } = await import("./okx.js");
+  // ─── Bundle / Cluster Analysis (GMGN/OKX via unified adapter) ───
+  const { getAdvancedInfo, getClusterList } = await import("./enrichment.js");
   const [advancedData, clusterList] = await Promise.all([
     getAdvancedInfo(mint).catch(() => null),
     getClusterList(mint).catch(() => []),
