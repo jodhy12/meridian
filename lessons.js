@@ -149,13 +149,16 @@ export async function recordPerformance(perf) {
     });
   }
 
-  // Evolve thresholds every 5 closed positions
+  // Evolve thresholds every 5 closed positions — gated by autoEvolveEnabled flag
+  // Default: OFF (respect user-tuned config). Set autoEvolveEnabled: true to re-enable.
   if (data.performance.length % MIN_EVOLVE_POSITIONS === 0) {
     const { config, reloadScreeningThresholds } = await import("./config.js");
-    const result = evolveThresholds(data.performance, config);
-    if (result?.changes && Object.keys(result.changes).length > 0) {
-      reloadScreeningThresholds();
-      log("evolve", `Auto-evolved thresholds: ${JSON.stringify(result.changes)}`);
+    if (config.management?.autoEvolveEnabled) {
+      const result = evolveThresholds(data.performance, config);
+      if (result?.changes && Object.keys(result.changes).length > 0) {
+        reloadScreeningThresholds();
+        log("evolve", `Auto-evolved thresholds: ${JSON.stringify(result.changes)}`);
+      }
     }
 
     // Darwinian signal weight recalculation
@@ -287,14 +290,20 @@ export async function recordScreeningOutcome(candidateCount) {
   }
   save(data);
 
-  // Check scarcity independently — don't wait for position close to trigger evolution
+  // Scarcity-triggered evolution — disabled by default to respect user-tuned config.
+  // Auto-relaxing maxVolatility/minFee from scarcity overrides data-backed manual tuning.
+  // Re-enable via `autoEvolveEnabled: true` in user-config if user wants adaptive behavior.
+  const { config, reloadScreeningThresholds } = await import("./config.js");
+  if (!config.management?.autoEvolveEnabled) {
+    return;
+  }
+
   const recent = data.screening_outcomes.slice(-SCARCITY_WINDOW);
   if (
     recent.length >= SCARCITY_WINDOW &&
     avg(recent.map((o) => o.n)) < SCARCITY_THRESHOLD &&
     data.performance.length >= MIN_EVOLVE_POSITIONS
   ) {
-    const { config, reloadScreeningThresholds } = await import("./config.js");
     const result = evolveThresholds(data.performance, config);
     if (result?.changes && Object.keys(result.changes).length > 0) {
       reloadScreeningThresholds();

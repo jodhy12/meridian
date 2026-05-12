@@ -102,6 +102,8 @@ export const config = {
     // Bins width control — narrow strategy is data-backed positive-net bucket
     binsBelow:             u.binsBelow             ?? 12,
     maxBinsBelow:          u.maxBinsBelow          ?? 15,
+    // Auto-evolve gate — false respects user-tuned config (avoids scarcity-relax overriding manual tuning)
+    autoEvolveEnabled:     u.autoEvolveEnabled     ?? false,
   },
 
   // ─── Strategy Mapping ───────────────────
