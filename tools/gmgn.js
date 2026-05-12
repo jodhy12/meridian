@@ -56,19 +56,36 @@ async function executeRequest(path, params) {
     headers: {
       "X-APIKEY": GMGN_API_KEY,
       "Content-Type": "application/json",
+      // Browser-like headers to bypass Cloudflare bot challenge
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept": "application/json, text/plain, */*",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Accept-Encoding": "gzip, deflate, br",
+      "Origin": "https://gmgn.ai",
+      "Referer": "https://gmgn.ai/",
+      "Sec-Ch-Ua": '"Chromium";v="120", "Not_A Brand";v="8"',
+      "Sec-Ch-Ua-Mobile": "?0",
+      "Sec-Ch-Ua-Platform": '"macOS"',
+      "Sec-Fetch-Dest": "empty",
+      "Sec-Fetch-Mode": "cors",
+      "Sec-Fetch-Site": "same-site",
     },
   });
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
-    // Parse rate limit reset to set bannedUntil
+    // 429 = rate limit (server tells us reset_at)
     if (res.status === 429) {
       try {
         const j = JSON.parse(txt);
         if (j.reset_at) bannedUntil = j.reset_at * 1000;
-        else bannedUntil = Date.now() + 60_000;  // default 1min back-off
+        else bannedUntil = Date.now() + 60_000;
       } catch {
         bannedUntil = Date.now() + 60_000;
       }
+    }
+    // 403 = Cloudflare challenge ("Just a moment...") — IP flagged by CF, back off harder
+    if (res.status === 403 && txt.includes("Just a moment")) {
+      bannedUntil = Date.now() + 5 * 60_000;  // 5 min back-off, give CF time to release
     }
     throw new Error(`GMGN ${res.status}: ${path} — ${txt.slice(0, 100)}`);
   }
