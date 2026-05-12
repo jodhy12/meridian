@@ -99,6 +99,9 @@ export const config = {
     earlyILRatePerMin:     u.earlyILRatePerMin     ?? 0.15, // close if IL rate >= X %/min (data: traps avg 0.15-0.27%/min)
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD
     solMode:               u.solMode               ?? false,
+    // Bins width control — narrow strategy is data-backed positive-net bucket
+    binsBelow:             u.binsBelow             ?? 12,
+    maxBinsBelow:          u.maxBinsBelow          ?? 15,
   },
 
   // ─── Strategy Mapping ───────────────────
