@@ -110,7 +110,7 @@ The same pool will show much smaller numbers on 5m vs 24h. Adjust your expectati
 NOTE: "decent" = above filter floor. "Target" = full scoring points. Pools at target tend to win more.
 WARNING: fee_active_tvl_ratio > 6% on 1h is PUMP TRAP signal (post-pump distribution, high rug risk).
 
-TOKEN TAGS (from OKX advanced-info):
+TOKEN TAGS (from enrichment provider — GMGN or OKX):
 - dev_sold_all = BULLISH — dev has no tokens left to dump on you
 - dev_buying_more = BULLISH — dev is accumulating
 - smart_money_buy = BULLISH — smart money actively buying

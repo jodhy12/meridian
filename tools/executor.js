@@ -423,6 +423,13 @@ export async function executeTool(name, args) {
       // Match bins_above proportionally — narrower bins_below means narrower bins_above too
       args.bins_above = Math.max(6, Math.round(args.bins_below * 0.2));
       log("executor", `Auto-filled bins_above=${args.bins_above}`);
+    } else {
+      // Hard cap bins_above too — bid_ask narrow needs tight upside for fast OOR-up profit
+      const maxAbove = config.management.maxBinsAbove ?? 8;
+      if (args.bins_above > maxAbove) {
+        log("executor", `Clamped LLM bins_above ${args.bins_above} → ${maxAbove} (narrow upside)`);
+        args.bins_above = maxAbove;
+      }
     }
   }
 
