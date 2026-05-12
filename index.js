@@ -1013,7 +1013,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         `  Breakdown:\n    ${scoreBreakdown}`,
         `  Metrics:  fee_tvl=${feeMultiTF} | vol=$${pool.volume_window} | tvl=$${pool.active_tvl} | volatility=${vol} | organic=${pool.organic_score} | mcap=$${pool.mcap}${pool.token_age_hours != null ? ` | age=${pool.token_age_hours}h` : ""}`,
         `  Audit:    top10=${top10}% | bots=${bots}%${bundlePct != null ? ` | bundle=${bundlePct}%` : ""} | fees_sol=${feesSol}${holderCount != null ? ` | holders=${holderCount}` : ""}${launchpad ? ` | launchpad=${launchpad}` : ""}`,
-        `  OKX:      ${okxRisk}`,
+        `  Risk:     ${okxRisk}`,
         okxTags ? `  Tags:     ${okxTags}` : null,
         pool.price_vs_ath_pct != null ? `  ATH:      price_vs_ath=${pool.price_vs_ath_pct}%` : null,
         `  Tech:     ${techStatus} | supertrend ${stMultiTF}`,

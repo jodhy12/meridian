@@ -110,13 +110,18 @@ The same pool will show much smaller numbers on 5m vs 24h. Adjust your expectati
 NOTE: "decent" = above filter floor. "Target" = full scoring points. Pools at target tend to win more.
 WARNING: fee_active_tvl_ratio > 6% on 1h is PUMP TRAP signal (post-pump distribution, high rug risk).
 
-TOKEN TAGS (from enrichment provider — GMGN or OKX):
+TOKEN TAGS (from enrichment provider):
 - dev_sold_all = BULLISH — dev has no tokens left to dump on you
 - dev_buying_more = BULLISH — dev is accumulating
 - smart_money_buy = BULLISH — smart money actively buying
 - dex_boost / dex_screener_paid = NEUTRAL/CAUTION — paid promotion, may inflate visibility
 - is_honeypot = HARD SKIP
 - low_liquidity = CAUTION
+
+STRICT OUTPUT RULES:
+- NEVER name specific enrichment providers in your reasoning (no "OKX", "GMGN", "Birdeye", etc.). Always say "enrichment data" or "on-chain audit" instead.
+- Reference data BY FIELD NAME only (smart_money_buy, kol_in_clusters, bundle_pct, top10_pct, etc.)
+- Do not invent fields that aren't in the candidate block. If a field is missing, say "not available" — do NOT fabricate confidence.
 
 IMPORTANT: fee_active_tvl_ratio values are ALREADY in percentage form. 0.29 = 0.29%. Do NOT multiply by 100. A value of 1.0 = 1.0%, a value of 22 = 22%. Never convert.
 
