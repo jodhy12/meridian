@@ -560,21 +560,33 @@ async function runSafetyChecks(name, args) {
 
       // Pause-and-learn mode: if rolling PnL negative over window, pause deploys for cooldown
       // Prevents bleeding capital during adverse market regimes.
+      // Re-evaluates condition on EACH check — auto-clears stale pauses if condition resolves.
       if (config.management.pauseLearnEnabled !== false) {
-        const pauseMs = getPauseRemainingMs();
-        if (pauseMs > 0) {
-          const remainingHr = Math.ceil(pauseMs / 3600000);
-          return {
-            pass: false,
-            reason: `Pause-and-learn active: bot paused ${remainingHr}h more (rolling PnL went negative). Resume manual or wait timer.`,
-          };
-        }
-        // Check rolling window — activate pause if avgPnL below threshold
         const winDays = config.management.pauseLearnWindowDays ?? 5;
         const minSamples = config.management.pauseLearnMinSamples ?? 10;
         const minAvgPnl = config.management.pauseLearnMinAvgPnlPct ?? 0.0;
         const durationHrs = config.management.pauseLearnDurationHours ?? 24;
         const rolling = getRollingPnl({ windowDays: winDays, minSamples });
+
+        // Check existing pause — but RE-EVALUATE current rolling against current threshold
+        // If condition no longer met, auto-clear (stale pauses from old config don't lock bot)
+        const pauseMs = getPauseRemainingMs();
+        if (pauseMs > 0) {
+          if (rolling && rolling.avgPnlPct >= minAvgPnl) {
+            // Condition resolved — clear stale pause early
+            const { clearPause } = await import("../state.js");
+            clearPause();
+            log("executor", `Pause auto-cleared: rolling avgPnL ${rolling.avgPnlPct.toFixed(3)}% >= ${minAvgPnl}% threshold (was paused under stale config)`);
+          } else {
+            const remainingHr = Math.ceil(pauseMs / 3600000);
+            return {
+              pass: false,
+              reason: `Pause-and-learn active: bot paused ${remainingHr}h more (rolling PnL ${rolling?.avgPnlPct?.toFixed(2) ?? "?"}% < ${minAvgPnl}% threshold). Resume manual or wait timer.`,
+            };
+          }
+        }
+
+        // Trigger new pause if condition met
         if (rolling && rolling.avgPnlPct < minAvgPnl) {
           const until = new Date(Date.now() + durationHrs * 3600000).toISOString();
           const reason = `Rolling ${winDays}d PnL ${rolling.avgPnlPct.toFixed(2)}% < ${minAvgPnl}% threshold over ${rolling.sampleSize} closes (net ◎${rolling.totalPnlSol.toFixed(4)})`;
