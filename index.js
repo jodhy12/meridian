@@ -911,6 +911,17 @@ export async function runScreeningCycle({ silent = false } = {}) {
       // 2f. Hard filter — bearish trend or overbought entry
       // Data: 9 losers had no entry filter; supertrend bearish = price likely to drop
       // Supertrend only hard-blocks low-score pools (<60); high-confidence pools (≥60) pass with warning
+
+      // VWAP extreme filter — price stretched far from mean = high reversal/dump risk
+      // Data 2026-05-14: CHUD-SOL deployed at peak, dumped -22% in 51m
+      const vwapDist = tech?.indicators?.vwap?.distance_pct ?? 0;
+      const vwapDist1h = tech1h?.indicators?.vwap?.distance_pct ?? 0;
+      const vwapExtremeThreshold = 50;
+      if (Math.abs(vwapDist) > vwapExtremeThreshold || Math.abs(vwapDist1h) > vwapExtremeThreshold) {
+        log("screening", `Filtered ${pool.name} — VWAP extreme (15m=${vwapDist.toFixed(1)}%, 1h=${vwapDist1h.toFixed(1)}%) — price stretched, reversal risk`);
+        continue;
+      }
+
       if (pool._exit_signal) {
         log("screening", `Filtered ${pool.name} — overbought at entry (exit signal active)`);
         continue;
