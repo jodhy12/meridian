@@ -102,8 +102,42 @@ export const config = {
     // Bins width control — narrow strategy is data-backed positive-net bucket
     binsBelow:             u.binsBelow             ?? 12,
     maxBinsBelow:          u.maxBinsBelow          ?? 15,
+    maxBinsAbove:          u.maxBinsAbove          ?? 8,
     // Auto-evolve gate — false respects user-tuned config (avoids scarcity-relax overriding manual tuning)
     autoEvolveEnabled:     u.autoEvolveEnabled     ?? false,
+
+    // ─── Pause-and-learn (auto-pause on rolling negative PnL) ───
+    pauseLearnEnabled:     u.pauseLearnEnabled     ?? true,
+    pauseLearnWindowDays:  u.pauseLearnWindowDays  ?? 5,
+    pauseLearnMinSamples:  u.pauseLearnMinSamples  ?? 10,
+    pauseLearnMinAvgPnlPct: u.pauseLearnMinAvgPnlPct ?? -0.5,  // trigger if rolling avg < this
+    pauseLearnDurationHours: u.pauseLearnDurationHours ?? 24,
+
+    // ─── Consecutive-loss cooldown ───
+    consecutiveLossThreshold:    u.consecutiveLossThreshold    ?? 3,
+    consecutiveLossWindowMin:    u.consecutiveLossWindowMin    ?? 60,
+    consecutiveLossPctCutoff:    u.consecutiveLossPctCutoff    ?? -0.5,
+    consecutiveLossCooldownMin:  u.consecutiveLossCooldownMin  ?? 30,
+
+    // ─── Recovery guards (peak-aware exit skip) ───
+    recoveryGracePeakPct:  u.recoveryGracePeakPct  ?? 0.5,
+    maxHoldFlatPeakPct:    u.maxHoldFlatPeakPct    ?? 0.5,
+    flatExitPeakSkipPct:   u.flatExitPeakSkipPct   ?? 0.5,
+    flatExitMinAgeMin:     u.flatExitMinAgeMin     ?? 120,
+    flatExitMaxFeeYieldPct: u.flatExitMaxFeeYieldPct ?? 0.3,
+    flatExitPnlBandPct:    u.flatExitPnlBandPct    ?? 1.0,
+
+    // ─── Rule 8 (max hold negative) refined thresholds ───
+    maxHoldNegativePnlPct:      u.maxHoldNegativePnlPct      ?? -1.5,
+    maxHoldNegativePeakSkipPct: u.maxHoldNegativePeakSkipPct ?? 0.5,
+
+    // ─── Rule 8b (lost gains) ───
+    lostGainsPeakMinPct:   u.lostGainsPeakMinPct   ?? 1.0,
+    lostGainsMinAgeMin:    u.lostGainsMinAgeMin    ?? 30,
+
+    // ─── Confidence sizing (currently disabled per user data analysis) ───
+    sizingByScore:         u.sizingByScore         ?? false,
+    scoreSizingTiers:      u.scoreSizingTiers      ?? null,
   },
 
   // ─── Strategy Mapping ───────────────────
@@ -131,15 +165,18 @@ export const config = {
   },
 
   // ─── Darwinian Signal Weighting ───────
+  // Read from nested u.darwin.* (current user-config format), fall back to flat u.darwin* (legacy), then defaults
   darwin: {
-    enabled:        u.darwinEnabled     ?? true,
-    windowDays:     u.darwinWindowDays  ?? 60,
-    recalcEvery:    u.darwinRecalcEvery ?? 5,    // recalc every N closes
-    boostFactor:    u.darwinBoost       ?? 1.05,
-    decayFactor:    u.darwinDecay       ?? 0.95,
-    weightFloor:    u.darwinFloor       ?? 0.3,
-    weightCeiling:  u.darwinCeiling     ?? 2.5,
-    minSamples:     u.darwinMinSamples  ?? 5,
+    enabled:        u.darwin?.enabled         ?? u.darwinEnabled     ?? true,
+    windowDays:     u.darwin?.windowDays      ?? u.darwinWindowDays  ?? 60,
+    recalcEvery:    u.darwin?.recalcEvery     ?? u.darwinRecalcEvery ?? 5,
+    boostFactor:    u.darwin?.boostFactor     ?? u.darwinBoost       ?? 1.02,  // post-fix slow learning
+    decayFactor:    u.darwin?.decayFactor     ?? u.darwinDecay       ?? 0.98,
+    weightFloor:    u.darwin?.weightFloor     ?? u.darwinFloor       ?? 0.5,
+    weightCeiling:  u.darwin?.weightCeiling   ?? u.darwinCeiling     ?? 1.8,
+    minSamples:     u.darwin?.minSamples      ?? u.darwinMinSamples  ?? 10,
+    liftDeadband:   u.darwin?.liftDeadband    ?? 0.05,                          // anti-noise
+    winThresholdPct: u.darwin?.winThresholdPct ?? 0.5,                          // pnl_pct threshold to count as win
   },
 
   // ─── Common Token Mints ────────────────
