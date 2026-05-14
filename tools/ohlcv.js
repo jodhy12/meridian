@@ -240,26 +240,37 @@ function aggregateCandles(bars, n) {
 const _ohlcvCache = new Map();
 const OHLCV_CACHE_TTL = 5 * 60 * 1000;
 
+// Global rate-limit cooldown — when 429 hit, skip subsequent calls until cooldown expires
+// Avoids wasting 30+ seconds per pool on retries during severe rate limiting
+let _gtCooldownUntil = 0;
+const GT_COOLDOWN_MS = 60 * 1000;  // 60s back-off after 429
+
 // ─── GeckoTerminal OHLCV fetch ─────────────────────────────────
 async function fetchOhlcv(poolAddress, timeframe = "15m") {
   const cacheKey = `${poolAddress}:${timeframe}`;
   const cached = _ohlcvCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < OHLCV_CACHE_TTL) return cached.bars;
 
+  // Global cooldown — fail fast during rate-limit window
+  if (Date.now() < _gtCooldownUntil) {
+    const remaining = Math.ceil((_gtCooldownUntil - Date.now()) / 1000);
+    throw new Error(`GeckoTerminal cooldown ${remaining}s more (skip until rate limit clears)`);
+  }
+
   const tf       = TIMEFRAME_MAP[timeframe] ?? TIMEFRAME_MAP["15m"];
   const rawLimit = tf.aggregate > 1 ? Math.min(tf.aggregate * 60, 1000) : 100;
   const url      = `${GECKOTERMINAL_BASE}/networks/solana/pools/${poolAddress}/ohlcv/${tf.gt}?limit=${rawLimit}&currency=usd`;
 
-  // Retry up to 2x on 429 with exponential backoff
+  // Single retry on 429 — if still failing, set cooldown and bail
   const HEADERS = { "Accept": "application/json;version=20230302" };
   let res = await fetch(url, { headers: HEADERS });
   if (res.status === 429) {
-    await new Promise(r => setTimeout(r, 5000));
+    await new Promise(r => setTimeout(r, 3000));
     res = await fetch(url, { headers: HEADERS });
   }
   if (res.status === 429) {
-    await new Promise(r => setTimeout(r, 10000));
-    res = await fetch(url, { headers: HEADERS });
+    _gtCooldownUntil = Date.now() + GT_COOLDOWN_MS;
+    throw new Error(`GeckoTerminal 429 — set ${GT_COOLDOWN_MS/1000}s cooldown`);
   }
   if (!res.ok) throw new Error(`GeckoTerminal OHLCV fetch failed: ${res.status} ${res.statusText}`);
 

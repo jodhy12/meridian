@@ -860,19 +860,34 @@ export async function runScreeningCycle({ silent = false } = {}) {
       // Delay to avoid GeckoTerminal 429 — sequential calls, 2.5s apart
       await new Promise(r => setTimeout(r, 2500));
       let tech = null;
+      let techFetchOk = false;
       try {
         const raw = await getTechnicalSignals({ pool_address: pool.pool, timeframe: "15m" });
-        if (!raw?.error) tech = raw;
+        if (!raw?.error) {
+          tech = raw;
+          techFetchOk = true;
+        }
       } catch { /**/ }
 
       // 2d-bonus. Multi-TF supertrend confirmation (1h)
       // Hard-skip if 15m AND 1h both bearish — strong macro downtrend signal
       let tech1h = null;
+      let tech1hFetchOk = false;
       try {
         await new Promise(r => setTimeout(r, 1500)); // delay between OHLCV calls
         const raw1h = await getTechnicalSignals({ pool_address: pool.pool, timeframe: "1h" });
-        if (!raw1h?.error) tech1h = raw1h;
+        if (!raw1h?.error) {
+          tech1h = raw1h;
+          tech1hFetchOk = true;
+        }
       } catch { /**/ }
+
+      // Fail-closed: skip pool if BOTH timeframes failed (can't verify trend at all)
+      // Single-TF failure is acceptable — at least one direction confirmed
+      if (!techFetchOk && !tech1hFetchOk) {
+        log("screening", `Filtered ${pool.name} — multi-TF tech check unavailable (OHLCV fetch failed 15m+1h, likely 429 rate limit). Cannot verify trend, skipping for safety.`);
+        continue;
+      }
 
       // 2e. Pre-compute bins — narrow range matched to aggressive stop loss strategy
       // Concentrated liquidity = higher fee per swap, OOR exits faster (which we want)
