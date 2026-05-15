@@ -889,14 +889,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
         continue;
       }
 
-      // 2e. Pre-compute bins — narrow range matched to aggressive stop loss strategy
-      // Concentrated liquidity = higher fee per swap, OOR exits faster (which we want)
-      // Formula: 15 + (vol/5) × 15, clamped [15, 30] — range ~14-24% with bin_step 80
+      // 2e. Pre-compute bins — bid_ask thesis: room for dip-recover, symmetric mirror
+      // bins_below = vol-scaled [15, 22], bins_above mirrors for OOR-up protection
       const vol = Number(pool.volatility || 3);
-      const totalBins = Math.min(30, Math.max(15, Math.round(15 + (vol / 5) * 15)));
+      const binsBelowCalc = Math.min(22, Math.max(15, Math.round(15 + (vol / 5) * 7)));
       const atrBins = tech?.suggested_bins_below ?? null;
-      pool._bins_below = atrBins ?? Math.round(totalBins * 0.5);
-      pool._bins_above = atrBins ?? Math.round(totalBins * 0.5);
+      pool._bins_below = atrBins ?? binsBelowCalc;
+      pool._bins_above = atrBins ?? binsBelowCalc;
       pool._tech_ok    = !tech?.entry_warnings?.length;
       pool._tech_warn  = tech?.entry_warnings ?? [];
       pool._exit_signal = tech?.exit_signal ?? false;
@@ -919,6 +918,18 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const vwapExtremeThreshold = 50;
       if (Math.abs(vwapDist) > vwapExtremeThreshold || Math.abs(vwapDist1h) > vwapExtremeThreshold) {
         log("screening", `Filtered ${pool.name} — VWAP extreme (15m=${vwapDist.toFixed(1)}%, 1h=${vwapDist1h.toFixed(1)}%) — price stretched, reversal risk`);
+        continue;
+      }
+
+      // bid_ask anti-pump entry filter — thesis = buy-dip-recover, so reject pump entry
+      // Skip if price >+8% above VWAP (overextended) or RSI2 > 75 (overbought)
+      const rsi2 = tech?.indicators?.rsi2 ?? null;
+      if (vwapDist > 8) {
+        log("screening", `Filtered ${pool.name} — price +${vwapDist.toFixed(1)}% above VWAP, pump entry not aligned with bid_ask thesis`);
+        continue;
+      }
+      if (rsi2 !== null && rsi2 > 75) {
+        log("screening", `Filtered ${pool.name} — RSI2=${rsi2.toFixed(1)} overbought, wait for cooldown before bid_ask entry`);
         continue;
       }
 

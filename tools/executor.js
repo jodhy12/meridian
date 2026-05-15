@@ -406,17 +406,21 @@ export async function executeTool(name, args) {
       args.amount_y = args.amount_sol;
     }
 
+    // Force bid_ask — user-locked strategy for dip-then-recover thesis on meme pairs
+    if (args.strategy !== "bid_ask") {
+      log("executor", `Overriding strategy "${args.strategy ?? "?"}" → "bid_ask" (user-locked)`);
+      args.strategy = "bid_ask";
+    }
+
     if (!args.bins_below || args.bins_below <= 0) {
       const vol = snap.volatility ?? args.volatility ?? 3;
-      // Data-backed: narrow ≤15 bins_below is THE only positive-net bucket (+◎0.0071/close)
-      // Medium 26-40 bucket = biggest loser (-◎0.0029/close). Force narrow band.
-      // Light vol scaling: low vol → 10 bins, high vol → 15 bins. Total range [10, 15].
-      args.bins_below = Math.round(Math.min(Math.max(10 + (vol / 5) * 5, 10), 15));
-      log("executor", `Auto-filled bins_below=${args.bins_below} (volatility: ${vol}, narrow strategy)`);
-    } else if (args.bins_below > (config.management.maxBinsBelow ?? 15)) {
-      // Hard cap LLM-suggested wide ranges (data: 26+ bins is losing strategy)
-      const capped = config.management.maxBinsBelow ?? 15;
-      log("executor", `Clamped LLM bins_below ${args.bins_below} → ${capped} (narrow strategy enforced)`);
+      // bid_ask thesis: SOL piled in corner waits for dip → swap to token cheap → recover
+      // Needs room for dip to play out. Vol-scaled: low vol → 15, high vol → 22.
+      args.bins_below = Math.round(Math.min(Math.max(15 + (vol / 5) * 7, 15), 22));
+      log("executor", `Auto-filled bins_below=${args.bins_below} (volatility: ${vol}, bid_ask thesis)`);
+    } else if (args.bins_below > (config.management.maxBinsBelow ?? 25)) {
+      const capped = config.management.maxBinsBelow ?? 25;
+      log("executor", `Clamped LLM bins_below ${args.bins_below} → ${capped}`);
       args.bins_below = capped;
     }
     if (!args.bins_above || args.bins_above <= 0) {

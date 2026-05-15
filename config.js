@@ -100,9 +100,9 @@ export const config = {
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD
     solMode:               u.solMode               ?? false,
     // Bins width control — narrow strategy is data-backed positive-net bucket
-    binsBelow:             u.binsBelow             ?? 12,
-    maxBinsBelow:          u.maxBinsBelow          ?? 15,
-    maxBinsAbove:          u.maxBinsAbove          ?? 15,
+    binsBelow:             u.binsBelow             ?? 18,
+    maxBinsBelow:          u.maxBinsBelow          ?? 25,
+    maxBinsAbove:          u.maxBinsAbove          ?? 25,
     // Auto-evolve gate — false respects user-tuned config (avoids scarcity-relax overriding manual tuning)
     autoEvolveEnabled:     u.autoEvolveEnabled     ?? false,
 
