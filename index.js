@@ -896,8 +896,17 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const atrBins = tech?.suggested_bins_below ?? null;
       pool._bins_below = atrBins ?? binsBelowCalc;
       pool._bins_above = atrBins ?? binsBelowCalc;
-      pool._tech_ok    = !tech?.entry_warnings?.length;
-      pool._tech_warn  = tech?.entry_warnings ?? [];
+      // bid_ask thesis: bearish supertrend + post-dip = OPPORTUNITY, not warning
+      // We're LPing, not directional trading. Fees come from frantic dip-buyers at the bottom.
+      const _rsi2 = tech?.indicators?.rsi2 ?? 50;
+      const _vwapForGate = tech?.indicators?.vwap?.distance_pct ?? 0;
+      const _isDipZone = _vwapForGate < -3 && _rsi2 < 55;
+      const _rawWarnings = tech?.entry_warnings ?? [];
+      const _filteredWarnings = _isDipZone
+        ? _rawWarnings.filter(w => !/supertrend|bearish/i.test(w))
+        : _rawWarnings;
+      pool._tech_ok    = !_filteredWarnings.length;
+      pool._tech_warn  = _filteredWarnings;
       pool._exit_signal = tech?.exit_signal ?? false;
       pool._tech_snapshot = tech ? {
         rsi2: tech.indicators?.rsi2 ?? null,
@@ -930,6 +939,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
       }
       if (rsi2 !== null && rsi2 > 75) {
         log("screening", `Filtered ${pool.name} — RSI2=${rsi2.toFixed(1)} overbought, wait for cooldown before bid_ask entry`);
+        continue;
+      }
+      // Falling knife guard — price too deep below VWAP = no support, dip may continue past range
+      if (vwapDist < -35) {
+        log("screening", `Filtered ${pool.name} — price ${vwapDist.toFixed(1)}% below VWAP, falling knife — wait for first bounce`);
         continue;
       }
 
@@ -1072,21 +1086,40 @@ CANDIDATES (sorted best → worst)
 ${candidateBlocks.join("\n\n")}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BID_ASK THESIS (read carefully — this overrides directional intuition)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+We are LPing with bid_ask single-sided SOL. We are NOT directional traders.
+Our profit comes from: dip happens → our SOL converts to token at cheap basis → price recovers → we collect fees + capital gain on recovery.
+
+THIS MEANS bearish supertrend + price below VWAP + RSI2 in 25-55 range = OPPORTUNITY, not danger.
+The "scary" entries that directional traders avoid (post-dip, bearish trend) are EXACTLY where bid_ask LP wins.
+
+GOOD ENTRY (deploy):
+- VWAP_dist between -3% and -25% (post-dip, room to recover)
+- RSI2 between 25 and 60 (not overbought, not yet panic-low)
+- Supertrend bearish on 15m is FINE — we want the dip
+- Bonus: 1h supertrend up while 15m bearish = pullback in uptrend (best case)
+
+BAD ENTRY (skip):
+- VWAP_dist > +5% → pump entry, will reverse against us
+- RSI2 > 65 → overbought, wait for cooldown
+- VWAP_dist < -30% → falling knife, no support, may break range
+- exit_signal_active → momentum already exhausted
+
 DEPLOY RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. Pick the highest-score candidate that passes judgment.
-   Score ≥ ${config.screening.minDeployScore + 15} = strong deploy. ${config.screening.minDeployScore}–${config.screening.minDeployScore + 14} = deploy only if smart_money/kol confirmed OR strong fee_tvl. < ${config.screening.minDeployScore} = skip.
-   Note: scoring system uses evolved weights (signal-weights.json) — score is INDICATIVE not absolute. Trust multi-signal confirmation over score alone.
-2. SKIP if: tech entry_warnings OR exit_signal_active (overbought).
+1. Pick the highest-score candidate that passes the BID_ASK THESIS judgment above.
+   Score ≥ ${config.screening.minDeployScore + 15} = strong deploy if entry zone OK. ${config.screening.minDeployScore}–${config.screening.minDeployScore + 14} = deploy only if entry zone is clearly post-dip. < ${config.screening.minDeployScore} = skip.
+2. SKIP only if: exit_signal_active OR VWAP_dist outside [-30%, +5%] OR RSI2 > 65.
+   DO NOT skip on bearish supertrend alone — that is the entry, not the exit.
 3. Use bins_below/bins_above exactly as pre-computed — do NOT recalculate.
 4. Call deploy_position with: strategy="bid_ask", amount_y=${deployAmount}
 
 SCORING GUIDANCE (multi-signal pattern recognition):
-- SWEET SPOT: fee_tvl near scoring target + vol 2-4 + organic ≥ 70 + age ≥ 24h → strong deploy
-- DEAD POOL RISK: fee_tvl very low OR volatility too quiet → likely zero fees post-deploy
-- PUMP TRAP: fee_tvl far above target (e.g. 5×+) → already pumped, distribution phase, AVOID
+- SWEET SPOT: fee_tvl near scoring target + vol 2-4 + organic ≥ 70 + VWAP_dist in [-20%, -5%] + RSI2 in [30, 55] → strong deploy
+- DEAD POOL RISK: fee_tvl very low OR volatility < 2 → likely zero fees post-deploy
+- PUMP TRAP: fee_tvl far above target (e.g. 5×+) + VWAP_dist positive → distribution phase, AVOID
 - Bot holders near filter cap (${config.screening.maxBotHoldersPct}%) = elevated risk, prefer pools with lower bot %
-- Trust multi-signal confirmation. Score alone is INDICATIVE — high score + bad price action = skip.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 REPORT FORMAT

@@ -152,6 +152,8 @@ Timeframe: ${config.screening.timeframe} | fee_tvl floor: ${config.screening.min
 
 All candidates are pre-scored and pre-enriched. Pick the highest-score candidate that passes judgment and call deploy_position. Use bins_below/bins_above exactly as pre-computed.
 
+STRATEGY: bid_ask single-sided SOL (post-dip-then-recover LP thesis). Bearish supertrend + price below VWAP = ENTRY OPPORTUNITY, not a skip signal. Skip only on pump entries (VWAP > +5%, RSI2 > 65) or extreme dips with no support (VWAP < -30%). The deploy goal text contains the full thesis — read it.
+
 HARD RULES:
 - get_top_candidates returns 0 pools → output "⛔ NO DEPLOY — no candidates available" as final answer immediately. DO NOT call search_pools, get_token_info, check_smart_wallets_on_pool, or any other discovery tool to chase alternatives.
 - fees_sol < ${config.screening.minTokenFeesSol} → SKIP (bundled/scam)
