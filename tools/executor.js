@@ -420,14 +420,14 @@ export async function executeTool(name, args) {
       args.bins_below = capped;
     }
     if (!args.bins_above || args.bins_above <= 0) {
-      // Match bins_above proportionally — narrower bins_below means narrower bins_above too
-      args.bins_above = Math.max(6, Math.round(args.bins_below * 0.2));
-      log("executor", `Auto-filled bins_above=${args.bins_above}`);
+      // Mirror bins_below — symmetric narrow gives room for price to recover after dip
+      // Previously asymmetric (×0.2 floor 6) → caused chronic OOR-up exits on meme pumps
+      args.bins_above = args.bins_below;
+      log("executor", `Auto-filled bins_above=${args.bins_above} (mirror bins_below)`);
     } else {
-      // Hard cap bins_above too — bid_ask narrow needs tight upside for fast OOR-up profit
-      const maxAbove = config.management.maxBinsAbove ?? 8;
+      const maxAbove = config.management.maxBinsAbove ?? 15;
       if (args.bins_above > maxAbove) {
-        log("executor", `Clamped LLM bins_above ${args.bins_above} → ${maxAbove} (narrow upside)`);
+        log("executor", `Clamped LLM bins_above ${args.bins_above} → ${maxAbove}`);
         args.bins_above = maxAbove;
       }
     }
