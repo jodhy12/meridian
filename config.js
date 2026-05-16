@@ -83,7 +83,14 @@ export const config = {
     maxTrailingDurationMin: u.maxTrailingDurationMin ?? 180, // max minutes trailing TP can run (data: BURNIE 393m -7.73%, BabyTrump 346m -1.43%)
     tpCheckIntervalMin:    u.tpCheckIntervalMin    ?? 1,    // management cycle interval when position is in TP/danger zone (faster than normal)
     dangerZonePct:         u.dangerZonePct         ?? 2,    // trigger fast polling when PnL drops below -X%
-    tokenCooldownHours:    u.tokenCooldownHours    ?? 12,   // block re-deploy into same token after loss for X hours
+    tokenCooldownHours:    u.tokenCooldownHours    ?? 2,    // fallback if close-reason doesn't match any category
+    cooldownCriticalHours: u.cooldownCriticalHours ?? 12,   // dead pool, repeated OOR — structural broken
+    cooldownILHours:       u.cooldownILHours       ?? 1.5,  // IL stop / stop loss / Early IL — V-shape window
+    cooldownDirectionHours:u.cooldownDirectionHours?? 0.5,  // pumped / OOR — price moved, fresh state
+    cooldownYieldHours:    u.cooldownYieldHours    ?? 3,    // low yield / stale flat — quiet pool
+    cooldownFlatHours:     u.cooldownFlatHours     ?? 2,    // max hold negative / flat exit
+    cooldownBypassEnabled: u.cooldownBypassEnabled ?? true, // allow bypass if pool currently scoring high in screening
+    cooldownBypassMinScore:u.cooldownBypassMinScore?? 75,   // min cached score to bypass cooldown
     trailingFastExitMultiplier: u.trailingFastExitMultiplier ?? 2, // skip confirmation when drop >= X * trailingDropPct
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,

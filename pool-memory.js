@@ -41,6 +41,39 @@ function isOorCloseReason(reason) {
   return text === "oor" || text.includes("out of range") || text.includes("oor");
 }
 
+/**
+ * Classify close reason → cooldown duration (hours).
+ * Categories (most-specific first):
+ *   Critical (12h)  — dead pool, near-zero fees, repeated OOR — structurally broken
+ *   IL/Stop (1.5h)  — IL stop / stop loss / Early IL — V-shape window
+ *   Yield (3h)      — low yield / stale flat — pool quiet but maybe recover
+ *   Flat (2h)       — max hold negative / Flat exit — slow death
+ *   Direction (0.5h)— pumped above / OOR / Out of range — price moved, fresh state
+ *   Default (2h)    — anything else (rare; falls back to tokenCooldownHours)
+ */
+export function getCooldownByReason(reason) {
+  const r = String(reason || "").toLowerCase();
+  const cfg = config.management;
+  if (!r) return cfg.tokenCooldownHours ?? 2;
+  // Critical first — overrides other matches (e.g. "dead pool — OOR after 4 min" should be critical, not direction)
+  if (r.includes("dead pool") || r.includes("near-zero fees") || r.includes("no fees") || r.includes("repeated oor")) {
+    return cfg.cooldownCriticalHours ?? 12;
+  }
+  if (r.includes("il stop") || r.includes("stop loss") || r.includes("early il")) {
+    return cfg.cooldownILHours ?? 1.5;
+  }
+  if (r.includes("low yield") || r.includes("stale flat")) {
+    return cfg.cooldownYieldHours ?? 3;
+  }
+  if (r.includes("max hold") || r.includes("flat exit") || r.includes("lost-gains") || r.includes("lost gains")) {
+    return cfg.cooldownFlatHours ?? 2;
+  }
+  if (r.includes("pumped") || r.includes("oor") || r.includes("out of range")) {
+    return cfg.cooldownDirectionHours ?? 0.5;
+  }
+  return cfg.tokenCooldownHours ?? 2;
+}
+
 function isAdjustedWinRateExcludedReason(reason) {
   const text = String(reason || "").trim().toLowerCase();
   return text.includes("out of range") ||
@@ -148,22 +181,11 @@ export function recordPoolDeploy(poolAddress, deployData) {
     entry.base_mint = deployData.base_mint;
   }
 
-  // Set cooldown based on close reason
-  const closeReasonLower = (deploy.close_reason || "").toLowerCase();
-
-  if (closeReasonLower.includes("low yield")) {
-    const cooldownUntil = setPoolCooldown(entry, 4, "low yield");
-    log("pool-memory", `Cooldown set for ${entry.name} until ${cooldownUntil} (low yield close)`);
-  }
-
-  if (closeReasonLower.includes("stop loss")) {
-    const cooldownUntil = setPoolCooldown(entry, 8, "stop loss");
-    log("pool-memory", `Cooldown set for ${entry.name} until ${cooldownUntil} (stop loss)`);
-  }
-
-  if (closeReasonLower.includes("pumped") || closeReasonLower.includes("above range")) {
-    const cooldownUntil = setPoolCooldown(entry, 2, "pumped above range");
-    log("pool-memory", `Cooldown set for ${entry.name} until ${cooldownUntil} (pumped above range)`);
+  // Set cooldown based on close reason — uses per-category durations from config
+  if (deploy.close_reason) {
+    const cooldownHours = getCooldownByReason(deploy.close_reason);
+    const cooldownUntil = setPoolCooldown(entry, cooldownHours, deploy.close_reason.slice(0, 60));
+    log("pool-memory", `Cooldown ${cooldownHours}h set for ${entry.name} until ${cooldownUntil} (${deploy.close_reason.slice(0, 50)})`);
   }
 
   const oorTriggerCount = config.management.oorCooldownTriggerCount ?? 3;

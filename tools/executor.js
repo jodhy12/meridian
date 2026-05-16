@@ -15,7 +15,7 @@ import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, g
 import { setPositionInstruction, getTrackedPositions, getTrackedPosition, getPauseRemainingMs, setPauseUntil } from "../state.js";
 import { computeDeployAmount } from "../config.js";
 
-import { getPoolMemory, addPoolNote } from "../pool-memory.js";
+import { getPoolMemory, addPoolNote, getCooldownByReason } from "../pool-memory.js";
 import { addStrategy, listStrategies, getStrategy, setActiveStrategy, removeStrategy } from "../strategy-library.js";
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
 import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
@@ -671,37 +671,50 @@ async function runSafetyChecks(name, args) {
         }
       }
 
-      // Token cooldown: block re-deploy into same token within 24h after a loss
+      // Token cooldown: block re-deploy into same token after a loss.
+      // Uses per-reason cooldown durations (1.5h IL, 0.5h direction, 3h yield, 12h critical, etc).
+      // Bypass: if pool currently scoring ≥ cooldownBypassMinScore in screening cache, allow re-entry.
       if (args.pool_name || args.base_mint) {
-        const cooldownHours = config.management.tokenCooldownHours ?? 24;
-        const cooldownMs = cooldownHours * 60 * 60 * 1000;
         const allPositions = getTrackedPositions();
-        const recentLoss = allPositions.find((p) => {
-          if (!p.closed || !p.closed_at) return false;
-          const closedAgo = Date.now() - new Date(p.closed_at).getTime();
-          if (closedAgo > cooldownMs) return false;
-          // Match by pool_name (token name) or base_mint
+        let blockingClose = null;
+        let blockingCooldownHours = 0;
+        for (const p of allPositions) {
+          if (!p.closed || !p.closed_at) continue;
           const nameMatch = args.pool_name && p.pool_name &&
             p.pool_name.replace(/-SOL$/, "").toLowerCase() === args.pool_name.replace(/-SOL$/, "").toLowerCase();
           const mintMatch = args.base_mint && p.base_mint && p.base_mint === args.base_mint;
-          if (!nameMatch && !mintMatch) return false;
-          // Check if it was a loss, flat, or poor performer
-          // Includes Early IL (Rule 5) and max hold negative (Rule 8) which were missing
-          const wasLoss = p.notes?.some(n =>
-            n.includes("IL stop") || n.includes("stop loss") || n.includes("stale") ||
-            n.includes("low yield") || n.includes("dead pool") || n.includes("no fees") ||
-            n.includes("Early IL") || n.includes("max hold") || n.includes("OOR") ||
-            n.includes("Flat exit")
-          );
+          if (!nameMatch && !mintMatch) continue;
+          // Get this close's specific cooldown duration based on its reason
+          const lastNote = p.notes?.[p.notes.length - 1] || "";
           const peakLow = (p.peak_pnl_pct ?? 0) < 1;
-          return wasLoss || peakLow;
-        });
-        if (recentLoss) {
-          const hoursAgo = Math.round((Date.now() - new Date(recentLoss.closed_at).getTime()) / 3600000);
-          return {
-            pass: false,
-            reason: `Token cooldown: ${recentLoss.pool_name} closed ${hoursAgo}h ago with poor performance. Wait ${cooldownHours}h before re-deploying.`,
-          };
+          // Only treat as loss if note matches loss patterns OR peak was very low
+          const wasLoss = /il stop|stop loss|stale|low yield|dead pool|no fees|early il|max hold|oor|flat exit|out of range/i.test(lastNote);
+          if (!wasLoss && !peakLow) continue;
+          const reasonCooldownHours = getCooldownByReason(lastNote);
+          const cooldownMs = reasonCooldownHours * 60 * 60 * 1000;
+          const closedAgo = Date.now() - new Date(p.closed_at).getTime();
+          if (closedAgo > cooldownMs) continue;
+          // Within cooldown window — this is a blocking close
+          if (!blockingClose || closedAgo < (Date.now() - new Date(blockingClose.closed_at).getTime())) {
+            blockingClose = p;
+            blockingCooldownHours = reasonCooldownHours;
+          }
+        }
+        if (blockingClose) {
+          // Check bypass: pool re-screened with strong score = V-shape opportunity, allow re-entry
+          const bypassEnabled = config.management.cooldownBypassEnabled ?? true;
+          const bypassMinScore = config.management.cooldownBypassMinScore ?? 75;
+          const cachedSignals = getCachedPoolSignals(args.pool_address);
+          const currentScore = cachedSignals?.score ?? args.signal_snapshot?.score ?? 0;
+          if (bypassEnabled && currentScore >= bypassMinScore) {
+            log("executor", `Cooldown bypassed for ${args.pool_name || args.pool_address?.slice(0, 8)} — current score ${currentScore} ≥ ${bypassMinScore} (was: ${blockingClose.pool_name} cooldown ${blockingCooldownHours}h)`);
+          } else {
+            const hoursAgo = Math.round((Date.now() - new Date(blockingClose.closed_at).getTime()) / 360000) / 10;
+            return {
+              pass: false,
+              reason: `Token cooldown: ${blockingClose.pool_name} closed ${hoursAgo}h ago. Wait ${blockingCooldownHours}h (close reason: ${(blockingClose.notes?.[blockingClose.notes.length - 1] || "").slice(0, 50)}). Bypass needs score ≥ ${bypassMinScore}, current ${currentScore}.`,
+            };
+          }
         }
       }
 
