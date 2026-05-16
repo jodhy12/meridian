@@ -221,19 +221,26 @@ function supertrend(bars, period = 10, multiplier = 3) {
 // ─── Aggregate minute candles into larger timeframe ────────────
 function aggregateCandles(bars, n) {
   if (n <= 1) return bars;
-  const result = [];
-  for (let i = 0; i + n <= bars.length; i += n) {
-    const slice = bars.slice(i, i + n);
-    result.push({
-      time:   slice[0].time,
-      open:   slice[0].open,
-      high:   Math.max(...slice.map(b => b.high)),
-      low:    Math.min(...slice.map(b => b.low)),
-      close:  slice[slice.length - 1].close,
-      volume: slice.reduce((s, b) => s + b.volume, 0),
-    });
+  // Time-bucket aggregation aligned to bucket boundaries (00/15/30/45 for 15m).
+  // GeckoTerminal skips minutes with zero volume — count-based grouping would
+  // produce misaligned candles spanning >n minutes of real time, breaking all
+  // downstream indicators (RSI, BB, MACD, VWAP, supertrend, ATR).
+  const sorted = [...bars].sort((a, b) => a.time - b.time);
+  const bucketSec = n * 60;
+  const buckets = new Map();
+  for (const b of sorted) {
+    const key = Math.floor(b.time / bucketSec) * bucketSec;
+    const existing = buckets.get(key);
+    if (!existing) {
+      buckets.set(key, { time: key, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume });
+    } else {
+      existing.high = Math.max(existing.high, b.high);
+      existing.low = Math.min(existing.low, b.low);
+      existing.close = b.close;
+      existing.volume += b.volume;
+    }
   }
-  return result;
+  return [...buckets.values()].sort((a, b) => a.time - b.time);
 }
 
 // ─── In-memory OHLCV cache (5 min TTL) ─────────────────────────
@@ -278,7 +285,10 @@ async function fetchOhlcv(poolAddress, timeframe = "15m") {
   const raw  = data?.data?.attributes?.ohlcv_list ?? [];
   if (!raw.length) throw new Error("GeckoTerminal returned empty OHLCV data");
 
-  const bars = raw.map(([t, o, h, l, c, v]) => ({ time: t, open: o, high: h, low: l, close: c, volume: v }));
+  // GeckoTerminal returns ohlcv_list NEWEST-FIRST — sort to oldest-first so
+  // indicators (RSI, VWAP, MACD, supertrend) walk time forward correctly.
+  const bars = raw.map(([t, o, h, l, c, v]) => ({ time: t, open: o, high: h, low: l, close: c, volume: v }))
+                  .sort((a, b) => a.time - b.time);
   const result = tf.aggregate > 1 ? aggregateCandles(bars, tf.aggregate) : bars;
   _ohlcvCache.set(cacheKey, { bars: result, ts: Date.now() });
   return result;
@@ -348,7 +358,20 @@ export async function getTechnicalSignals({ pool_address, timeframe = "15m" }) {
   if (volSpike?.is_spike)    entryWarnings.push(volSpike.warning);
   if (stVal && !stVal.is_bullish) entryWarnings.push(stVal.warning);
 
-  log("ohlcv", `${pool_address} [${timeframe}] RSI=${rsiVal} VWAP_dist=${vwapVal?.distance_pct}% volSpike=${volSpike?.is_spike} ST=${stVal?.direction} → exit=${exitSignal}`);
+  // Verifiable diagnostic log — cross-check against TradingView (same TF, same indicator settings)
+  // Includes bar count + bucket time range so we can spot data sparsity / misalignment issues
+  const firstBucket = bars[0]?.time ? new Date(bars[0].time * 1000).toISOString().slice(5, 16).replace("T", " ") : "?";
+  const lastBucket  = bars[bars.length - 1]?.time ? new Date(bars[bars.length - 1].time * 1000).toISOString().slice(5, 16).replace("T", " ") : "?";
+  const closeStr    = currentClose ? currentClose.toExponential(3) : "?";
+  const bbUpperStr  = bb?.upper ? bb.upper.toExponential(3) : "?";
+  log("ohlcv",
+    `${pool_address} [${timeframe}] ` +
+    `bars=${bars.length} (${firstBucket}→${lastBucket} UTC) ` +
+    `close=${closeStr} BBu=${bbUpperStr} ` +
+    `RSI2=${rsiVal} VWAPd=${vwapVal?.distance_pct}% ` +
+    `volSpike=${volSpike?.is_spike} ST=${stVal?.direction} ` +
+    `→ exit=${exitSignal}${exitReason ? ` (${exitReason})` : ""}`
+  );
 
   if (exitSignal && telegramEnabled()) {
     notifyTechnicalSignal({
