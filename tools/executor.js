@@ -34,6 +34,7 @@ const USER_CONFIG_PATH = path.join(__dirname, "../user-config.json");
 import { log, logAction } from "../logger.js";
 import { notifyDeploy, notifyClose, notifySwap } from "../telegram.js";
 import { appendDecision } from "../decision-log.js";
+import { trackILRecovery } from "../il-recovery-tracker.js";
 
 // Registered by index.js so update_config can restart cron jobs when intervals change
 let _cronRestarter = null;
@@ -494,6 +495,19 @@ export async function executeTool(name, args) {
         if (args.reason && args.reason.toLowerCase().includes("yield")) {
           const poolAddr = result.pool || args.pool_address;
           if (poolAddr) addPoolNote({ pool_address: poolAddr, note: `Closed: low yield (fee/TVL below threshold) at ${new Date().toISOString().slice(0,10)}` }).catch?.(() => {});
+        }
+        // Track post-close price recovery for IL/stop-loss exits (data collection for Use Case B)
+        if (args.reason && /IL stop|Stop loss|stop loss|Early IL/i.test(args.reason)) {
+          const poolAddr = result.pool || args.pool_address;
+          if (poolAddr) {
+            trackILRecovery({
+              pool: poolAddr,
+              poolName: result.pool_name || args.position_address?.slice(0, 8) || "?",
+              closeReason: args.reason,
+              exitPnlPct: result.pnl_pct ?? null,
+              closedAt: new Date().toISOString(),
+            });
+          }
         }
         // Auto-swap base token back to SOL unless user said to hold
         if (!args.skip_swap && result.base_mint) {
