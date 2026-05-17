@@ -139,3 +139,86 @@ function avg(arr) {
 function isNum(n) {
   return typeof n === "number" && isFinite(n);
 }
+
+// ─── Lightweight LPer quality signal for screening ─────────────
+// Single API call (vs studyTopLPers which calls N historical endpoints).
+// Cached for 1h to avoid hammering during repeated screening cycles.
+const _lperCache = new Map();
+const LPER_CACHE_TTL = 60 * 60 * 1000;  // 1h
+
+/**
+ * Quick LPer quality assessment — just top-lpers endpoint, no historical fetch.
+ * Returns classification + aggregate metrics for use as screening signal.
+ *
+ * Tiers (based on top LPer aggregate quality):
+ *   elite   — avg ROI ≥ 20%, avg win_rate ≥ 70%, ≥3 credible LPers (smart money zone)
+ *   good    — avg ROI ≥ 10%, avg win_rate ≥ 60%, ≥2 credible LPers
+ *   neutral — any credible LPers but below "good" thresholds
+ *   weak    — no credible LPers (all losing, low sample, or bot-dominated)
+ *   none    — API failed or pool has no LP data
+ */
+export async function getLperQualitySignal({ pool_address }) {
+  if (!pool_address) return { tier: "none", reason: "no pool address" };
+  if (!LPAGENT_KEYS.length) return { tier: "none", reason: "LPAGENT_API_KEY not set" };
+
+  // Cache check
+  const cached = _lperCache.get(pool_address);
+  if (cached && Date.now() - cached.ts < LPER_CACHE_TTL) {
+    return cached.signal;
+  }
+
+  try {
+    const res = await fetch(
+      `${LPAGENT_API}/pools/${pool_address}/top-lpers?sort_order=desc&page=1&limit=15`,
+      { headers: { "x-api-key": nextKey() } }
+    );
+    if (!res.ok) {
+      const signal = { tier: "none", reason: `API ${res.status}` };
+      _lperCache.set(pool_address, { signal, ts: Date.now() });
+      return signal;
+    }
+    const data = await res.json();
+    const all = data?.data || [];
+
+    // Credible filter: enough samples to be statistically meaningful
+    const credible = all.filter(l => l.total_lp >= 3 && l.total_inflow > 1000);
+
+    if (credible.length === 0) {
+      const signal = {
+        tier: "weak",
+        credible_count: 0,
+        total_lpers: all.length,
+        reason: all.length === 0 ? "no LP data" : "no credible LPers (need ≥3 positions, ≥$1k inflow)",
+      };
+      _lperCache.set(pool_address, { signal, ts: Date.now() });
+      return signal;
+    }
+
+    const avgRoi = credible.reduce((s, l) => s + (l.roi || 0), 0) / credible.length * 100;
+    const avgWinRate = credible.reduce((s, l) => s + (l.win_rate || 0), 0) / credible.length * 100;
+    const avgHoldHours = credible.reduce((s, l) => s + (l.avg_age_hour || 0), 0) / credible.length;
+    const bestRoi = Math.max(...credible.map(l => (l.roi || 0) * 100));
+    const scalperRatio = credible.filter(l => l.avg_age_hour < 1).length / credible.length;
+
+    // Tier classification
+    let tier = "neutral";
+    if (credible.length >= 3 && avgRoi >= 20 && avgWinRate >= 70) tier = "elite";
+    else if (credible.length >= 2 && avgRoi >= 10 && avgWinRate >= 60) tier = "good";
+
+    const signal = {
+      tier,
+      credible_count: credible.length,
+      avg_roi_pct: Math.round(avgRoi * 10) / 10,
+      avg_win_rate_pct: Math.round(avgWinRate * 10) / 10,
+      avg_hold_hours: Math.round(avgHoldHours * 10) / 10,
+      best_roi_pct: Math.round(bestRoi * 10) / 10,
+      scalper_ratio: Math.round(scalperRatio * 100) / 100,
+    };
+    _lperCache.set(pool_address, { signal, ts: Date.now() });
+    return signal;
+  } catch (e) {
+    const signal = { tier: "none", reason: e.message };
+    _lperCache.set(pool_address, { signal, ts: Date.now() });
+    return signal;
+  }
+}

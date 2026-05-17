@@ -47,6 +47,10 @@ const SIGNAL_NAMES = [
   // External
   "study_win_rate",
   "hive_consensus",
+  // LPer quality (top LPers in this pool — smart money confirmation layer)
+  "lper_avg_roi_pct",
+  "lper_avg_win_rate_pct",
+  "lper_credible_count",
 ];
 
 const DEFAULT_WEIGHTS = Object.fromEntries(SIGNAL_NAMES.map((s) => [s, 1.0]));
@@ -63,6 +67,9 @@ const HIGHER_IS_BETTER = new Set([
   "unique_traders",
   "study_win_rate",
   "hive_consensus",
+  "lper_avg_roi_pct",
+  "lper_avg_win_rate_pct",
+  "lper_credible_count",
 ]);
 
 // Signals where lower values generally indicate better candidates

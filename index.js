@@ -16,6 +16,7 @@ import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTracke
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
 import { getTokenInfo } from "./tools/token.js";
 import { cachePoolSignals } from "./screening-cache.js";
+import { getLperQualitySignal } from "./tools/study.js";
 
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
@@ -970,6 +971,21 @@ export async function runScreeningCycle({ silent = false } = {}) {
         log("screening", `Warning: ${pool.name} — 15m bearish supertrend (1h: ${tech1h?.indicators?.supertrend?.direction || "unknown"}), score ${pool.score}. Passing anyway`);
       }
 
+      // 2g. LPer quality signal — lightweight study of top LPers in this pool
+      // Cached 1h to avoid API hammering. Adds "elite/good/neutral/weak/none" tier.
+      let lperSignal = { tier: "none" };
+      try {
+        lperSignal = await getLperQualitySignal({ pool_address: pool.pool });
+        if (lperSignal.tier === "elite" || lperSignal.tier === "good") {
+          log("screening", `${pool.name} — LPer tier=${lperSignal.tier} (${lperSignal.credible_count} credible, avg ROI ${lperSignal.avg_roi_pct}%, win ${lperSignal.avg_win_rate_pct}%)`);
+        } else if (lperSignal.tier === "weak") {
+          log("screening", `Warning: ${pool.name} — LPer tier=weak (${lperSignal.reason}). Score-only, no confirmation from top LPers.`);
+        }
+      } catch (e) {
+        log("screening", `LPer signal fetch failed for ${pool.name}: ${e.message?.slice(0, 80)}`);
+      }
+      pool._lper_signal = lperSignal;
+
       // Cache all signals for this pool so executor can inject signal_snapshot at deploy
       cachePoolSignals(pool.pool, {
         organic_score: pool.organic_score ?? null,
@@ -997,6 +1013,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
         supertrend_bullish: pool._tech_snapshot?.supertrend === "up" || (tech?.indicators?.supertrend?.is_bullish ?? null),
         vwap_dist_pct: pool._tech_snapshot?.vwap_dist_pct ?? null,
         volume_spike: pool._tech_snapshot?.volume_spike ?? false,
+        // LPer quality (new — smart money signal layer)
+        lper_tier: lperSignal?.tier ?? "none",
+        lper_avg_roi_pct: lperSignal?.avg_roi_pct ?? null,
+        lper_avg_win_rate_pct: lperSignal?.avg_win_rate_pct ?? null,
+        lper_credible_count: lperSignal?.credible_count ?? 0,
       });
 
       enriched.push({ pool, ti });
@@ -1066,6 +1087,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const st1h  = pool._tech_snapshot?.supertrend_1h ?? "?";
       const stMultiTF = st1h !== "?" ? `15m=${st15m}/1h=${st1h}` : `15m=${st15m}`;
 
+      // LPer quality line
+      const lper = pool._lper_signal;
+      const lperEmoji = { elite: "💎", good: "✓", neutral: "·", weak: "⚠️", none: "?" }[lper?.tier] || "?";
+      const lperLine = lper && lper.tier !== "none"
+        ? `  LPers:    ${lperEmoji} ${lper.tier} (${lper.credible_count} credible, avg ROI ${lper.avg_roi_pct ?? "?"}%, win ${lper.avg_win_rate_pct ?? "?"}%, hold ${lper.avg_hold_hours ?? "?"}h)`
+        : `  LPers:    ? unavailable (${lper?.reason || "no data"})`;
+
       return [
         `━━━ ${pool.name} ━━━`,
         `  Score:    ${pool.score} [${pool.score_label}]`,
@@ -1076,6 +1104,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         okxTags ? `  Tags:     ${okxTags}` : null,
         pool.price_vs_ath_pct != null ? `  ATH:      price_vs_ath=${pool.price_vs_ath_pct}%` : null,
         `  Tech:     ${techStatus} | supertrend ${stMultiTF}`,
+        lperLine,
         `  Bins:     below=${pool._bins_below} above=${pool._bins_above} (use as-is, do NOT recalculate)`,
         `  Pool:     ${pool.pool}`,
       ].filter(Boolean).join("\n");
@@ -1124,10 +1153,18 @@ DEPLOY RULES
 4. Call deploy_position with: strategy="bid_ask", amount_y=${deployAmount}
 
 SCORING GUIDANCE (multi-signal pattern recognition):
-- SWEET SPOT: fee_tvl near scoring target + vol 2-4 + organic ≥ 70 + VWAP_dist in [-20%, -5%] + RSI2 in [30, 55] → strong deploy
-- DEAD POOL RISK: fee_tvl very low OR volatility < 2 → likely zero fees post-deploy
+- SWEET SPOT: fee_tvl near scoring target + vol 2-4 + organic ≥ 70 + VWAP_dist in [-20%, -5%] + RSI2 in [30, 55] + LPer tier=elite/good → strong deploy
+- DEAD POOL RISK: fee_tvl very low OR volatility < 2 OR LPer tier=weak (no credible LPers) → likely zero fees post-deploy
 - PUMP TRAP: fee_tvl far above target (e.g. 5×+) + VWAP_dist positive → distribution phase, AVOID
 - Bot holders near filter cap (${config.screening.maxBotHoldersPct}%) = elevated risk, prefer pools with lower bot %
+
+LPER QUALITY SIGNAL (smart money confirmation layer):
+- 💎 elite — top LPers consistently profitable (avg ROI ≥20%, win ≥70%). STRONG confirmation, prefer over high-score-but-weak-LPer pools.
+- ✓ good — credible LPers with positive track record (ROI ≥10%, win ≥60%). Solid confirmation.
+- · neutral — credible LPers present but mixed results. Score-driven decision.
+- ⚠️ weak — no credible LPers (all losing OR sample too small OR bot-dominated). Treat with caution even if score high.
+- ? unavailable — API failed. Decide on other signals.
+Tie-breaker: between 2 candidates with similar score, ALWAYS prefer higher LPer tier.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 REPORT FORMAT
