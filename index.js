@@ -280,8 +280,16 @@ async function runBriefing() {
   log("cron", "Starting morning briefing");
   try {
     const briefing = await generateBriefing();
+    log("cron", `Briefing generated (${briefing.length} chars)`);
     if (telegramEnabled()) {
-      await sendHTML(briefing);
+      const result = await sendHTML(briefing);
+      if (result?.ok) {
+        log("cron", `Briefing sent to Telegram (message_id=${result.result?.message_id})`);
+      } else {
+        log("cron_error", `Briefing sendHTML returned non-OK: ${JSON.stringify(result)?.slice(0, 200)}`);
+      }
+    } else {
+      log("cron", "Briefing skipped Telegram send (TOKEN not configured)");
     }
     setLastBriefingDate();
   } catch (error) {
