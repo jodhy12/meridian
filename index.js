@@ -1255,6 +1255,9 @@ Summarize the current portfolio health, total fees earned, and performance of al
     _pnlPollBusy = true;
     try {
       const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
+      // Sync count from fetch result — handles case where LLM/manual close happened between cycles
+      // without this, poller keeps firing every 30s until next management cycle resets count
+      timers._lastKnownPositionCount = result?.positions?.length ?? 0;
       if (!result?.positions?.length) return;
       let hasTPPosition = false;
       let hasDangerPosition = false;
