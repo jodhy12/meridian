@@ -3,6 +3,8 @@
  * Used by the /learn command — not called on every cycle.
  */
 
+import { log } from "../logger.js";
+
 const LPAGENT_API = "https://api.lpagent.io/open-api/v1";
 const LPAGENT_KEYS = (process.env.LPAGENT_API_KEY || "").split(",").map(k => k.trim()).filter(Boolean);
 let _keyIndex = 0;
@@ -144,7 +146,8 @@ function isNum(n) {
 // Single API call (vs studyTopLPers which calls N historical endpoints).
 // Cached for 1h to avoid hammering during repeated screening cycles.
 const _lperCache = new Map();
-const LPER_CACHE_TTL = 60 * 60 * 1000;  // 1h
+const LPER_CACHE_TTL_SUCCESS = 60 * 60 * 1000;  // 1h for real signals
+const LPER_CACHE_TTL_FAILURE = 5 * 60 * 1000;   // 5m for failures (allow retry after API recovers)
 
 /**
  * Quick LPer quality assessment — just top-lpers endpoint, no historical fetch.
@@ -161,10 +164,13 @@ export async function getLperQualitySignal({ pool_address }) {
   if (!pool_address) return { tier: "none", reason: "no pool address" };
   if (!LPAGENT_KEYS.length) return { tier: "none", reason: "LPAGENT_API_KEY not set" };
 
-  // Cache check
+  // Cache check — separate TTL for success vs failure (failures retry sooner)
   const cached = _lperCache.get(pool_address);
-  if (cached && Date.now() - cached.ts < LPER_CACHE_TTL) {
-    return cached.signal;
+  if (cached) {
+    const ttl = cached.signal.tier === "none" ? LPER_CACHE_TTL_FAILURE : LPER_CACHE_TTL_SUCCESS;
+    if (Date.now() - cached.ts < ttl) {
+      return cached.signal;
+    }
   }
 
   try {
@@ -175,6 +181,7 @@ export async function getLperQualitySignal({ pool_address }) {
     if (!res.ok) {
       const signal = { tier: "none", reason: `API ${res.status}` };
       _lperCache.set(pool_address, { signal, ts: Date.now() });
+      log("lper_quality", `${pool_address.slice(0, 8)}... API ${res.status} — caching "none" 5min`);
       return signal;
     }
     const data = await res.json();

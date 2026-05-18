@@ -312,8 +312,23 @@ let _positionsCacheAt = 0;
 let _positionsInflight = null; // deduplicates concurrent calls
 const LPAGENT_API = "https://api.lpagent.io/open-api/v1";
 
+// Cache owner positions to avoid hammering LPAgent API (rate limit ~5-10/min shared with other endpoints)
+// 60s TTL is fine for metadata enrichment — fresh enough for management decisions, infrequent enough to avoid 429s
+let _lpAgentOwnerCache = null;
+let _lpAgentOwnerCacheAt = 0;
+const LPAGENT_OWNER_TTL = 60 * 1000;
+const LPAGENT_OWNER_FAILURE_TTL = 30 * 1000;  // shorter retry on failure
+
 async function fetchLpAgentOpenPositions(walletAddress) {
   if (!process.env.LPAGENT_API_KEY) return {};
+
+  // Cache hit (success cached 60s, failure cached 30s)
+  if (_lpAgentOwnerCache !== null) {
+    const ttl = Object.keys(_lpAgentOwnerCache).length === 0 ? LPAGENT_OWNER_FAILURE_TTL : LPAGENT_OWNER_TTL;
+    if (Date.now() - _lpAgentOwnerCacheAt < ttl) {
+      return _lpAgentOwnerCache;
+    }
+  }
 
   const url = `${LPAGENT_API}/lp-positions/opening?owner=${walletAddress}`;
   try {
@@ -326,6 +341,9 @@ async function fetchLpAgentOpenPositions(walletAddress) {
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       log("lpagent_api", `HTTP ${res.status} for owner ${walletAddress.slice(0, 8)}: ${body.slice(0, 160)}`);
+      // Cache empty result briefly so we don't retry every cycle (prevents 429 cascade)
+      _lpAgentOwnerCache = {};
+      _lpAgentOwnerCacheAt = Date.now();
       return {};
     }
     const data = await res.json();
@@ -335,9 +353,13 @@ async function fetchLpAgentOpenPositions(walletAddress) {
       const addr = p.position || p.id || p.tokenId;
       if (addr) byAddress[addr] = p;
     }
+    _lpAgentOwnerCache = byAddress;
+    _lpAgentOwnerCacheAt = Date.now();
     return byAddress;
   } catch (e) {
     log("lpagent_api", `Fetch error for owner ${walletAddress.slice(0, 8)}: ${e.message}`);
+    _lpAgentOwnerCache = {};
+    _lpAgentOwnerCacheAt = Date.now();
     return {};
   }
 }
