@@ -127,10 +127,14 @@ function formatMgmtTelegram(positionData, actionMap, mgmtReport, solMode) {
     const waitMin = config.management.outOfRangeWaitMinutes;
     const oorStr = !p.in_range && oorMin > 0 ? `⏱ OOR ${oorMin}m/${waitMin}m` : null;
 
-    // Strategy + bin step from tracked state
+    // Strategy + bin step + peak + volatility from tracked state
     const tracked = getTrackedPosition(p.position);
     const strat = tracked?.strategy ?? null;
     const binStep = tracked?.bin_step ?? null;
+    const peakPnl = tracked?.peak_pnl_pct ?? null;
+    const volatility = tracked?.volatility ?? null;
+    const peakStr = peakPnl != null && peakPnl > 0 ? `peak ${peakPnl.toFixed(2)}%` : null;
+    const volStr = volatility != null ? `vol ${volatility.toFixed(1)}` : null;
     const stratStr = [strat, binStep ? `${binStep}bs` : null].filter(Boolean).join(" · ");
 
     // Bin position visualization
@@ -161,21 +165,35 @@ function formatMgmtTelegram(positionData, actionMap, mgmtReport, solMode) {
     }
 
     // Instruction/note
-    const instrLine = p.instruction ? `   📝 <i>${escHTML(p.instruction.substring(0, 60))}</i>` : null;
+    const instrLine = p.instruction ? `📝 <i>${escHTML(p.instruction.substring(0, 60))}</i>` : null;
 
-    // Build detail line 2: value · fees · age
-    const line2 = `   ${cur}${val}  ·  fees ${cur}${fee}  ·  ${ageStr}`;
-    // Build detail line 3: yield · OOR · strategy
-    const line3Parts = [yieldStr, oorStr, stratStr].filter(Boolean);
-    const line3 = line3Parts.length > 0 ? `   ${line3Parts.join("  ·  ")}` : null;
+    // ─── Mobile-friendly structured layout ───
+    // Group 1: Position value + fees (capital info)
+    const pnlUsdInline = Math.abs(pnlUsd) >= 0.0001
+      ? `  (${pnl >= 0 ? "+" : "-"}${cur}${Math.abs(pnlUsd).toFixed(4)})`
+      : "";
+    const moneyLine = `💰 Val ${cur}${val}${pnlUsdInline}`;
+    const feesLine  = `📊 Fees ${cur}${fee}${yield24h != null ? `  ·  yield ${yield24h.toFixed(2)}%` : ""}`;
+    // Group 2: Risk metrics (peak / volatility / age)
+    const riskParts = [
+      ageStr ? `⏱ ${ageStr}` : null,
+      peakStr ? `🎯 ${peakStr}` : null,
+      volStr ? `⚡ ${volStr}` : null,
+    ].filter(Boolean);
+    const riskLine = riskParts.length > 0 ? riskParts.join("  ·  ") : null;
+    // Group 3: Strategy + OOR status
+    const stratParts = [stratStr ? `🧭 ${stratStr}` : null, oorStr ? oorStr : null].filter(Boolean);
+    const stratLine = stratParts.length > 0 ? stratParts.join("  ·  ") : null;
 
     return [
-      `${rangeEmoji} <b>${escHTML(p.pair)}</b>  ${pnlEmoji} <b>${pnlSign}${pnl.toFixed(2)}%</b>${pnlUsdStr}`,
-      line2,
-      line3,
-      binLine,
+      `${rangeEmoji} <b>${escHTML(p.pair)}</b>  ${pnlEmoji} <b>${pnlSign}${pnl.toFixed(2)}%</b>`,
+      moneyLine,
+      feesLine,
+      riskLine,
+      stratLine,
+      binLine ? binLine.trim() : null,
       instrLine,
-      `   ${actionLine}`,
+      actionLine,
     ].filter(Boolean).join("\n");
   });
 
