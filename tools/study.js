@@ -149,6 +149,10 @@ const _lperCache = new Map();
 const LPER_CACHE_TTL_SUCCESS = 60 * 60 * 1000;  // 1h for real signals
 const LPER_CACHE_TTL_FAILURE = 5 * 60 * 1000;   // 5m for failures (allow retry after API recovers)
 
+// Auto-disable on 401 — top-lpers endpoint requires premium plan.
+// Set once on first 401, blocks all further calls until process restart (user can upgrade then restart).
+let _lperApiUnauthorized = false;
+
 /**
  * Quick LPer quality assessment — just top-lpers endpoint, no historical fetch.
  * Returns classification + aggregate metrics for use as screening signal.
@@ -163,6 +167,8 @@ const LPER_CACHE_TTL_FAILURE = 5 * 60 * 1000;   // 5m for failures (allow retry 
 export async function getLperQualitySignal({ pool_address }) {
   if (!pool_address) return { tier: "none", reason: "no pool address" };
   if (!LPAGENT_KEYS.length) return { tier: "none", reason: "LPAGENT_API_KEY not set" };
+  // Hard-skip if API previously returned 401 — endpoint requires premium plan
+  if (_lperApiUnauthorized) return { tier: "none", reason: "premium endpoint disabled (401)" };
 
   // Cache check — separate TTL for success vs failure (failures retry sooner)
   const cached = _lperCache.get(pool_address);
@@ -179,6 +185,12 @@ export async function getLperQualitySignal({ pool_address }) {
       { headers: { "x-api-key": nextKey() } }
     );
     if (!res.ok) {
+      // 401 = premium endpoint not authorized → disable for entire process to stop wasting calls
+      if (res.status === 401) {
+        _lperApiUnauthorized = true;
+        log("lper_quality", `LPer signal DISABLED for session — API 401 (top-lpers endpoint requires premium plan). Upgrade & restart bot to re-enable.`);
+        return { tier: "none", reason: "premium endpoint disabled (401)" };
+      }
       const signal = { tier: "none", reason: `API ${res.status}` };
       _lperCache.set(pool_address, { signal, ts: Date.now() });
       log("lper_quality", `${pool_address.slice(0, 8)}... API ${res.status} — caching "none" 5min`);
