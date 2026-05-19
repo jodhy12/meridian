@@ -232,13 +232,14 @@ export async function createLiveMessage(title, intro = "Starting...") {
     state.flushRequested = false;
     const text = render();
     if (!state.messageId) {
-      const sent = await sendMessage(text);
+      // Send with HTML parse_mode so footer (finalize text) renders bold/italic correctly
+      const sent = await postTelegram("sendMessage", { text: text.slice(0, 4096), parse_mode: "HTML" });
       state.messageId = sent?.result?.message_id ?? null;
       state.lastSentText = text;
       return;
     }
     if (text === state.lastSentText) return; // skip — Telegram rejects identical edits
-    await editMessage(text, state.messageId);
+    await postTelegram("editMessageText", { message_id: state.messageId, text: text.slice(0, 4096), parse_mode: "HTML" });
     state.lastSentText = text;
   }
 
