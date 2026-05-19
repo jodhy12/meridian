@@ -146,6 +146,9 @@ export function recalculateWeights(perfData, cfg = {}) {
   const weightCeiling   = darwin.weightCeiling   ?? 1.8;   // was 2.5 — tighter divergence
   const liftDeadband    = darwin.liftDeadband    ?? 0.05;  // skip changes when lift signal is noisy
   const winThresholdPct = darwin.winThresholdPct ?? 0.5;   // use pnl_pct (not pnl_usd which rounds to 0 on small positions)
+  // Hard cutoff date — excludes records older than this regardless of windowDays.
+  // Used to skip records with corrupt signal_snapshot (e.g. pre-OHLCV-fix era).
+  const dataCutoffISO   = darwin.dataCutoffISO   ?? null;
 
   const data = loadWeights();
   const weights = data.weights || { ...DEFAULT_WEIGHTS };
@@ -155,18 +158,20 @@ export function recalculateWeights(perfData, cfg = {}) {
     if (weights[name] == null) weights[name] = 1.0;
   }
 
-  // Filter to rolling window
+  // Filter to rolling window (windowDays) AND hard cutoff (dataCutoffISO)
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - windowDays);
   const cutoffISO = cutoff.toISOString();
+  const effectiveCutoffISO = dataCutoffISO && dataCutoffISO > cutoffISO ? dataCutoffISO : cutoffISO;
 
   const recent = perfData.filter((p) => {
     const ts = p.recorded_at || p.closed_at || p.deployed_at;
-    return ts && ts >= cutoffISO;
+    return ts && ts >= effectiveCutoffISO;
   });
 
   if (recent.length < minSamples) {
-    log("signal_weights", `Only ${recent.length} records in ${windowDays}d window (need ${minSamples}), skipping recalc`);
+    const cutoffNote = dataCutoffISO ? ` [dataCutoff: ${dataCutoffISO.slice(0, 10)}]` : "";
+    log("signal_weights", `Only ${recent.length} records in ${windowDays}d window${cutoffNote} (need ${minSamples}), skipping recalc`);
     return { changes: [], weights };
   }
 

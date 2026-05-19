@@ -184,6 +184,7 @@ export const config = {
     minSamples:     u.darwin?.minSamples      ?? u.darwinMinSamples  ?? 10,
     liftDeadband:   u.darwin?.liftDeadband    ?? 0.05,                          // anti-noise
     winThresholdPct: u.darwin?.winThresholdPct ?? 0.5,                          // pnl_pct threshold to count as win
+    dataCutoffISO:  u.darwin?.dataCutoffISO   ?? null,                          // hard cutoff to skip corrupt-signal records (e.g. pre-OHLCV-fix era)
   },
 
   // ─── Common Token Mints ────────────────
