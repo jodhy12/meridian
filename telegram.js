@@ -284,6 +284,10 @@ export async function createLiveMessage(title, intro = "Starting...") {
         state.flushTimer = null;
       }
       if (state.flushPromise) await state.flushPromise;
+      // Clear intro ("Scanning candidates..." / "Evaluating positions...") and tool progress lines
+      // when finalizing — only title + final report content remain for clean output
+      state.intro = "";
+      state.toolLines = [];
       state.footer = finalText;
       await flushNow();
       _liveMessageDepth = Math.max(0, _liveMessageDepth - 1);
