@@ -241,11 +241,12 @@ function formatScreenTelegram(rawReport, deployedOverride = null) {
   const icon = deployed ? "🚀" : blocked ? "⛔" : noPass ? "🔍" : "🔍";
   const title = deployed ? "Deployed" : blocked ? "Blocked" : noPass ? "No Candidates" : "Screening";
 
-  // Truncate at line boundary
+  // Truncate at line boundary — Telegram limit is 4096, leave buffer for title + live-msg sections
   let truncated = text;
-  if (text.length > 600) {
-    const cut = text.lastIndexOf("\n", 600);
-    truncated = text.substring(0, cut > 200 ? cut : 600) + "…";
+  const limit = 2500;
+  if (text.length > limit) {
+    const cut = text.lastIndexOf("\n", limit);
+    truncated = text.substring(0, cut > 800 ? cut : limit) + "…";
   }
 
   return `${icon} <b>${title}</b>\n${D}\n${mdToTelegramHTML(truncated)}`;
@@ -747,7 +748,7 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (mgmtReport) {
         const formatted = positionData.length > 0
           ? formatMgmtTelegram(positionData, actionMap, mgmtReport, config.management.solMode)
-          : `🔄 <b>Management</b>\n\n${mdToTelegramHTML(stripThink(mgmtReport).substring(0, 500))}`;
+          : `🔄 <b>Management</b>\n\n${mdToTelegramHTML(stripThink(mgmtReport).substring(0, 2500))}`;
         if (liveMessage) {
           // Combine into single message — finalize live message with formatted report as footer
           await liveMessage.finalize(formatted || "").catch(() => {});
