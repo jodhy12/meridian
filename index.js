@@ -17,6 +17,7 @@ import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memor
 import { getTokenInfo } from "./tools/token.js";
 import { cachePoolSignals } from "./screening-cache.js";
 import { getLperQualitySignal } from "./tools/study.js";
+import { processPendingILRecoveries } from "./il-recovery-tracker.js";
 
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
@@ -353,6 +354,9 @@ export async function runManagementCycle({ silent = false } = {}) {
   let actionMap = new Map();
   let liveMessage = null;
   const screeningCooldownMs = 5 * 60 * 1000;
+
+  // Process any matured IL recovery entries (lazy eval — restart-safe, no timers)
+  processPendingILRecoveries().catch((e) => log("cron_error", `IL recovery processing failed: ${e.message}`));
 
   try {
     const livePositions = await getMyPositions({ force: true }).catch((e) => {
