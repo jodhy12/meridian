@@ -51,11 +51,11 @@ export const config = {
     minTokenAgeHours:   u.minTokenAgeHours   ?? null, // null = no minimum
     maxTokenAgeHours:   u.maxTokenAgeHours   ?? null, // null = no maximum
     athFilterPct:       u.athFilterPct       ?? null, // e.g. -20 = only deploy if price is >= 20% below ATH
-    minVolatility:      u.minVolatility      ?? null,  // hard-skip pools with volatility below this (data: vol<2 avg -0.37% PnL)
-    maxVolatility:      u.maxVolatility      ?? 5,    // hard-skip pools with volatility above this (data: vol>5 avg -4% PnL)
+    minVolatility:      u.minVolatility      ?? 2,    // hard-skip pools with volatility below this (data: vol<2 avg -0.37% PnL)
+    maxVolatility:      u.maxVolatility      ?? 3.5,  // hard-skip pools with volatility above this (data: vol>3.5 = stale-flat magnet, 25-close analysis)
     minDeployScore:     u.minDeployScore     ?? 55,   // minimum screening score to allow deploy (safety check in executor)
-    minSwapCount:       u.minSwapCount       ?? 5,    // hard-skip pools with fewer swaps in timeframe (dead pool pre-filter)
-    minUniqueTraders:   u.minUniqueTraders   ?? 3,    // hard-skip pools with fewer unique traders (bot-only activity)
+    minSwapCount:       u.minSwapCount       ?? 20,   // hard-skip pools with fewer swaps in timeframe (dead pool pre-filter)
+    minUniqueTraders:   u.minUniqueTraders   ?? 15,   // hard-skip pools with fewer unique traders (bot-only activity)
     solOnlyPairs:       u.solOnlyPairs       ?? true, // only consider pools with SOL as quote token
     // Quality post-filter (applied after API, before LLM sees candidates)
     qualityMinOrganic:  u.qualityMinOrganic  ?? 70,
@@ -73,11 +73,11 @@ export const config = {
     oorCooldownTriggerCount: u.oorCooldownTriggerCount ?? 3,
     oorCooldownHours:       u.oorCooldownHours       ?? 12,
     minVolumeToRebalance:  u.minVolumeToRebalance  ?? 1000,
-    stopLossPct:           u.stopLossPct           ?? u.emergencyPriceDropPct ?? -50,
-    takeProfitFeePct:      u.takeProfitFeePct      ?? 5,
+    stopLossPct:           u.stopLossPct           ?? u.emergencyPriceDropPct ?? -7,  // safety fallback — never leave a position unprotected
+    takeProfitFeePct:      u.takeProfitFeePct      ?? 3,
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
     minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 45, // minutes before low yield can trigger close (data: 87% positions $0 fees)
-    maxILPct:              u.maxILPct              ?? null,  // max IL% (position value drop excl. fees) before force close, e.g. -5
+    maxILPct:              u.maxILPct              ?? -7,    // max IL% (position value drop excl. fees) before force close — safety fallback, never leave unprotected
     maxHoldNegativeMinutes: u.maxHoldNegativeMinutes ?? 90,  // force close negative PnL positions after this many minutes (default: 90)
     maxHoldFlatMinutes:    u.maxHoldFlatMinutes    ?? 120,  // force close if held > X min and peak < 1% (data: 74% positions flat, avg hold 77m)
     maxTrailingDurationMin: u.maxTrailingDurationMin ?? 180, // max minutes trailing TP can run (data: BURNIE 393m -7.73%, BabyTrump 346m -1.43%)
@@ -98,8 +98,8 @@ export const config = {
     positionSizePct:       u.positionSizePct       ?? 0.35,
     // Trailing take-profit
     trailingTakeProfit:    u.trailingTakeProfit    ?? true,
-    trailingTriggerPct:    u.trailingTriggerPct    ?? 3,    // activate trailing at X% PnL
-    trailingDropPct:       u.trailingDropPct       ?? 2.0,  // close when drops X% from peak
+    trailingTriggerPct:    u.trailingTriggerPct    ?? 2.5,  // activate trailing at X% PnL
+    trailingDropPct:       u.trailingDropPct       ?? 2.5,  // close when drops X% from peak
     pnlSanityMaxDiffPct:   u.pnlSanityMaxDiffPct   ?? 5,    // max allowed diff between reported and derived pnl % before ignoring a tick
     // Early IL detection — catch fast dumps before IL stop triggers
     earlyILMaxAgeMin:      u.earlyILMaxAgeMin      ?? 20,   // only check within first X minutes
@@ -150,7 +150,7 @@ export const config = {
   // ─── Strategy Mapping ───────────────────
   strategy: {
     strategy:  u.strategy  ?? "bid_ask",
-    binsBelow: u.binsBelow ?? 69,
+    binsBelow: u.binsBelow ?? 18,
   },
 
   // ─── Scheduling ─────────────────────────
