@@ -78,7 +78,7 @@ const _peakConfirmTimers = new Map();
 const _trailingDropConfirmTimers = new Map();
 const TRAILING_PEAK_CONFIRM_DELAY_MS = 15_000;
 const TRAILING_PEAK_CONFIRM_TOLERANCE = 0.85;
-const TRAILING_DROP_CONFIRM_DELAY_MS = 15_000;
+const TRAILING_DROP_CONFIRM_DELAY_MS = 8_000;  // lowered 15s→8s: less slippage while still filtering noise wicks
 const TRAILING_DROP_CONFIRM_TOLERANCE_PCT = 1.0;
 
 /** Strip <think>...</think> reasoning blocks that some models leak into output */
@@ -1311,9 +1311,12 @@ Summarize the current portfolio health, total fees earned, and performance of al
           }
           const cooldownMs = config.schedule.managementIntervalMin * 60 * 1000;
           const sinceLastTrigger = Date.now() - _pollTriggeredAt;
-          if (sinceLastTrigger >= cooldownMs) {
+          // Urgent exits (severe trailing fast-exit, max-duration cap) bypass management cooldown —
+          // waiting up to 5min risks major slippage on dumping positions
+          const isUrgent = exit.confirmed_recheck === true;
+          if (isUrgent || sinceLastTrigger >= cooldownMs) {
             _pollTriggeredAt = Date.now();
-            log("state", `[PnL poll] Exit alert: ${p.pair} — ${exit.reason} — triggering management`);
+            log("state", `[PnL poll] Exit alert: ${p.pair} — ${exit.reason}${isUrgent ? " — URGENT, bypassing cooldown" : ""} — triggering management`);
             runManagementCycle({ silent: true }).catch((e) => log("cron_error", `Poll-triggered management failed: ${e.message}`));
           } else {
             log("state", `[PnL poll] Exit alert: ${p.pair} — ${exit.reason} — cooldown (${Math.round((cooldownMs - sinceLastTrigger) / 1000)}s left)`);

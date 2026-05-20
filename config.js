@@ -91,7 +91,7 @@ export const config = {
     cooldownFlatHours:     u.cooldownFlatHours     ?? 2,    // max hold negative / flat exit
     cooldownBypassEnabled: u.cooldownBypassEnabled ?? true, // allow bypass if pool currently scoring high in screening
     cooldownBypassMinScore:u.cooldownBypassMinScore?? 75,   // min cached score to bypass cooldown
-    trailingFastExitMultiplier: u.trailingFastExitMultiplier ?? 2, // skip confirmation when drop >= X * trailingDropPct
+    trailingFastExitMultiplier: u.trailingFastExitMultiplier ?? 1.3, // skip confirmation when drop >= X * trailingDropPct (lowered 2→1.3: Embrace-SOL 2026-05-21 lost -4% to slippage — drop 3.48% missed 5% fast threshold, sat 15s in confirmation while price cratered)
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.2,
