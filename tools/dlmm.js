@@ -419,6 +419,15 @@ export async function getPositionPnl({ pool_address, position_address }) {
       ? parseFloat(p.pnlSolPctChange ?? p.pnlPctChange ?? 0)
       : parseFloat(p.pnlPctChange ?? 0);
 
+    // Estimated gas cost to close: claim+close (2 tx) + optional swap (1 tx if autoSwap).
+    // On-chain verified avg ~0.0008 SOL per Meteora DLMM tx via Helius pump endpoint.
+    // Conservative — final actual cost may be ±30% depending on network priority demand.
+    const txCount = config.management.autoSwapAfterClaim ? 3 : 2;
+    const estimatedGasSol = 0.0008 * txCount;
+    const deployAmt = config.management.deployAmountSol ?? 0.5;
+    const gasCostPct = (estimatedGasSol / deployAmt) * 100;
+    const netPnlPctAfterGas = Math.round((pnlPct - gasCostPct) * 100) / 100;
+
     // Use currency-suffixed field names so LLM knows the unit
     const unitSuffix = solMode ? "_sol" : "_usd";
     return {
@@ -434,6 +443,9 @@ export async function getPositionPnl({ pool_address, position_address }) {
       upper_bin:   p.upperBinId      ?? null,
       active_bin:  p.poolActiveBinId ?? null,
       age_minutes: p.createdAt ? Math.floor((Date.now() - p.createdAt * 1000) / 60000) : null,
+      estimated_close_gas_sol: Math.round(estimatedGasSol * 10000) / 10000,
+      estimated_close_gas_pct: Math.round(gasCostPct * 100) / 100,
+      net_pnl_pct_after_gas:   netPnlPctAfterGas,
     };
   } catch (error) {
     log("pnl_error", error.message);

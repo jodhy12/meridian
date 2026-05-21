@@ -828,10 +828,14 @@ async function runSafetyChecks(name, args) {
               position_address: args.position_address,
             });
             if (pnl && !pnl.error) {
-              const deployAmt = config.management.deployAmountSol ?? 0.2;
-              const gasCostSol = 0.002; // actual tx fees per cycle (on-chain verified)
-              const gasCostPct = (gasCostSol / deployAmt) * 100; // ~1% on 0.2, ~0.4% on 0.5
+              // Use estimated_close_gas_pct from PnL (computed per autoSwap setting)
+              // Fallback to legacy hardcoded if not available.
+              const gasCostPct = pnl.estimated_close_gas_pct ?? (() => {
+                const deployAmt = config.management.deployAmountSol ?? 0.5;
+                return (0.002 / deployAmt) * 100;
+              })();
               if (pnl.pnl_pct > 0 && pnl.pnl_pct < gasCostPct) {
+                const deployAmt = config.management.deployAmountSol ?? 0.5;
                 return {
                   pass: false,
                   reason: `Gas break-even guard: PnL +${pnl.pnl_pct}% is below gas cost (~${gasCostPct.toFixed(1)}% on ${deployAmt} SOL deploy). Not worth closing — let it run toward TP.`,
