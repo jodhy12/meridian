@@ -379,7 +379,7 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlPct, feesUsd = 0, amountSol = 0, strategy = "", holdMinutes = 0, closeReason = "", rangeEfficiency = null }) {
+export async function notifyClose({ pair, pnlUsd, pnlPct, feesUsd = 0, amountSol = 0, strategy = "", holdMinutes = 0, closeReason = "", rangeEfficiency = null, gasSol = 0 }) {
   if (hasActiveLiveMessage()) return;
   const D = "━━━━━━━━━━━━━━━━━━━━";
   const win = pnlUsd >= 0;
@@ -405,8 +405,13 @@ export async function notifyClose({ pair, pnlUsd, pnlPct, feesUsd = 0, amountSol
     D,
     `${pnlEmoji} PnL: <b>${sign}${cur}${(pnlUsd ?? 0).toFixed(4)}</b>  <i>(${pnlPctStr})</i>`,
     `💰 Fees: ${cur}${(feesUsd ?? 0).toFixed(4)}${effStr}`,
-    `⏱ Held: ${holdStr}` + (amountSol > 0 ? `  ·  ${amountSol} SOL` : ""),
   ];
+  if (gasSol > 0) {
+    const netPnlUsd = (pnlUsd ?? 0) - gasSol;
+    const netSign = netPnlUsd >= 0 ? "+" : "";
+    lines.push(`⛽ Gas: ◎${gasSol.toFixed(4)}  ·  Net: <b>${netSign}◎${netPnlUsd.toFixed(4)}</b>`);
+  }
+  lines.push(`⏱ Held: ${holdStr}` + (amountSol > 0 ? `  ·  ${amountSol} SOL` : ""));
   if (strategy) lines.push(`📐 ${esc(strategy)}`);
   if (closeReason) lines.push(`${D}\n📋 ${esc(closeReason)}`);
 

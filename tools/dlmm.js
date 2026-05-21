@@ -1051,6 +1051,11 @@ export async function closePosition({ position_address, reason }) {
         }
       }
 
+      // Estimated gas: 0.0008 SOL per tx × actual tx count (claim + close + future swap if autoSwap)
+      const claimAndCloseTxs = (claimTxHashes?.length || 0) + (closeTxHashes?.length || 0);
+      const swapTxEstimate = config.management.autoSwapAfterClaim ? 1 : 0;
+      const estimatedGasSol = Math.round((claimAndCloseTxs + swapTxEstimate) * 0.0008 * 10000) / 10000;
+
       return {
         success: true,
         position: position_address,
@@ -1066,6 +1071,7 @@ export async function closePosition({ position_address, reason }) {
         strategy: tracked.strategy,
         hold_minutes: minutesHeld,
         base_mint: pool.lbPair.tokenXMint.toString(),
+        estimated_gas_sol: estimatedGasSol,
       };
     }
 
