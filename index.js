@@ -575,6 +575,26 @@ export async function runManagementCycle({ silent = false } = {}) {
         actionMap.set(p.position, { action: "CLOSE", rule: 7, reason: `near-zero fees after 30 min — dead pool (peak ${effectivePeakPnl.toFixed(2)}% < ${recoveryGracePeak}%)` });
         continue;
       }
+      // Rule 7b: Early-dead detection via fee accumulation rate
+      // Added 2026-05-22 from snapshot timeline analysis: winners 30-60m fee 0.007 SOL avg (rate ~0.00016/min),
+      // marginals 0.004 SOL (rate ~0.00009/min), losers 0.004 SOL with drift negative.
+      // Threshold 0.00005 SOL/min catches marginals/losers while keeping winners (BABYTROLL win had rate ~0.00009/min at 15-30m).
+      // Window 25-45m: before rule 7's 30m flat-fee check, more aggressive on rate.
+      const earlyDeadEnabled = config.management.earlyDeadEnabled !== false;
+      const earlyDeadMinAge = config.management.earlyDeadMinAge ?? 25;
+      const earlyDeadMaxAge = config.management.earlyDeadMaxAge ?? 45;
+      const earlyDeadRate = config.management.earlyDeadFeeRatePerMin ?? 0.00005;
+      if (earlyDeadEnabled &&
+          p.in_range &&
+          (p.age_minutes ?? 0) >= earlyDeadMinAge &&
+          (p.age_minutes ?? 0) <= earlyDeadMaxAge &&
+          !hasShownLife) {
+        const feeRate = (p.unclaimed_fees_usd ?? 0) / Math.max(1, p.age_minutes);
+        if (feeRate < earlyDeadRate) {
+          actionMap.set(p.position, { action: "CLOSE", rule: "7b", reason: `Early dead detect: fee rate ${(feeRate*1000).toFixed(3)}m◎/min < ${(earlyDeadRate*1000).toFixed(3)}m◎/min threshold at age ${p.age_minutes}m (peak ${effectivePeakPnl.toFixed(2)}%)` });
+          continue;
+        }
+      }
       // Rule 8: max hold for clearly-negative PnL
       // Original data: 5 positions held >120m while negative = -14.10% total loss
       // Refined: noise band (-1.5%, 0%) is normal oscillation, NOT exit-worthy
@@ -925,13 +945,15 @@ export async function runScreeningCycle({ silent = false } = {}) {
         continue;
       }
 
-      // 2e. Pre-compute bins — bid_ask thesis: room for dip-recover, symmetric mirror
-      // bins_below = vol-scaled [15, 22], bins_above mirrors for OOR-up protection
+      // 2e. Pre-compute bins — bid_ask asymmetric: tight bins_below for fee concentration,
+      // wider bins_above for OOR-up protection during pump (1.5× factor)
+      // Changed 2026-05-22: paired with maxVol 5.0 — pump pools need range to ride upward move
       const vol = Number(pool.volatility || 3);
       const binsBelowCalc = Math.min(22, Math.max(15, Math.round(15 + (vol / 5) * 7)));
       const atrBins = tech?.suggested_bins_below ?? null;
-      pool._bins_below = atrBins ?? binsBelowCalc;
-      pool._bins_above = atrBins ?? binsBelowCalc;
+      const baseBins = atrBins ?? binsBelowCalc;
+      pool._bins_below = baseBins;
+      pool._bins_above = Math.round(baseBins * 1.5);
       // bid_ask thesis: bearish supertrend + post-dip = OPPORTUNITY, not warning
       // We're LPing, not directional trading. Fees come from frantic dip-buyers at the bottom.
       const _rsi2 = tech?.indicators?.rsi2 ?? 50;
@@ -967,18 +989,20 @@ export async function runScreeningCycle({ silent = false } = {}) {
       }
 
       // bid_ask anti-pump entry filter — thesis = buy-dip-recover, so reject pump entry
-      // Skip if price >+8% above VWAP (overextended) or RSI2 > 75 (overbought)
+      // Tightened 2026-05-22 from VWAP+8/RSI75 to align with golden-pattern data:
+      // VWAP+5% (pump trap, 0/1 wins in zone), RSI2>70 (overbought zone — winners cluster 50-65)
       const rsi2 = tech?.indicators?.rsi2 ?? null;
-      if (vwapDist > 8) {
+      if (vwapDist > 5) {
         log("screening", `Filtered ${pool.name} — price +${vwapDist.toFixed(1)}% above VWAP, pump entry not aligned with bid_ask thesis`);
         continue;
       }
-      if (rsi2 !== null && rsi2 > 75) {
+      if (rsi2 !== null && rsi2 > 70) {
         log("screening", `Filtered ${pool.name} — RSI2=${rsi2.toFixed(1)} overbought, wait for cooldown before bid_ask entry`);
         continue;
       }
       // Falling knife guard — price too deep below VWAP = no support, dip may continue past range
-      if (vwapDist < -35) {
+      // Tightened 2026-05-22 from -35 to -25 to match golden-pattern data (0/2 wins in VWAP<-25 zone)
+      if (vwapDist < -25) {
         log("screening", `Filtered ${pool.name} — price ${vwapDist.toFixed(1)}% below VWAP, falling knife — wait for first bounce`);
         continue;
       }
@@ -1155,34 +1179,44 @@ BID_ASK THESIS (read carefully — this overrides directional intuition)
 We are LPing with bid_ask single-sided SOL. We are NOT directional traders.
 Our profit comes from: dip happens → our SOL converts to token at cheap basis → price recovers → we collect fees + capital gain on recovery.
 
-THIS MEANS bearish supertrend + price below VWAP + RSI2 in 25-55 range = OPPORTUNITY, not danger.
+THIS MEANS bearish supertrend + price below VWAP + RSI2 in recovery zone = OPPORTUNITY, not danger.
 The "scary" entries that directional traders avoid (post-dip, bearish trend) are EXACTLY where bid_ask LP wins.
 
-GOOD ENTRY (deploy):
-- VWAP_dist between -3% and -25% (post-dip, room to recover)
-- RSI2 between 25 and 60 (not overbought, not yet panic-low)
+GOOD ENTRY (deploy) — derived from 31 post-fix closes:
+- VWAP_dist between -15% and -5% (post-dip recovery — 38% WR, avg +1.41%)
+- RSI2 between 50 and 65 (mid-high, indicates recovery starting — 43% WR, avg +2.27%)
+- OR RSI2 between 20 and 30 (cooling but not extreme — 25% WR, avg +1.43%)
 - Supertrend bearish on 15m is FINE — we want the dip
 - Bonus: 1h supertrend up while 15m bearish = pullback in uptrend (best case)
+- BONUS: volume_spike=true at entry (2x win rate — 40% vs 19% baseline)
+- BONUS: bin_step=80 (37.5% WR vs 19% for bin_step 100)
 
 BAD ENTRY (skip):
 - VWAP_dist > +5% → pump entry, will reverse against us
-- RSI2 > 65 → overbought, wait for cooldown
-- VWAP_dist < -30% → falling knife, no support, may break range
+- RSI2 > 70 → overbought, wait for cooldown
+- VWAP_dist < -25% → falling knife, no support (0/2 wins in this zone)
+- RSI2 < 20 → extreme oversold trap (3/13 wins, mostly flat +0.14% avg — bait zone)
+- RSI2 30-50 → neutral zone, weak signal (0/7 wins, avg +0.15%)
 - exit_signal_active → momentum already exhausted
+- token_age_hours < 48 → fresh tokens lose 2x more (winners avg 84 days, losers avg 2 days)
+- bot_holders_pct > 20 → bot-heavy pools underperform (losers avg 22.9% vs winners 13.8%)
 
 DEPLOY RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. Pick the highest-score candidate that passes the BID_ASK THESIS judgment above.
-   Score ≥ ${config.screening.minDeployScore + 15} = strong deploy if entry zone OK. ${config.screening.minDeployScore}–${config.screening.minDeployScore + 14} = deploy only if entry zone is clearly post-dip. < ${config.screening.minDeployScore} = skip.
-2. SKIP only if: exit_signal_active OR VWAP_dist outside [-30%, +5%] OR RSI2 > 65.
+   Score ≥ ${config.screening.minDeployScore + 15} = strong deploy if entry zone OK. ${config.screening.minDeployScore}–${config.screening.minDeployScore + 14} = deploy only if entry zone is clearly post-dip + volume spike. < ${config.screening.minDeployScore} = skip.
+2. SKIP only if: exit_signal_active OR VWAP_dist outside [-25%, +5%] OR RSI2 > 70 OR RSI2 < 20.
    DO NOT skip on bearish supertrend alone — that is the entry, not the exit.
 3. Use bins_below/bins_above exactly as pre-computed — do NOT recalculate.
 4. Call deploy_position with: strategy="bid_ask", amount_y=${deployAmount}
 
-SCORING GUIDANCE (multi-signal pattern recognition):
-- SWEET SPOT: fee_tvl near scoring target + vol 2-4 + organic ≥ 70 + VWAP_dist in [-20%, -5%] + RSI2 in [30, 55] + LPer tier=elite/good → strong deploy
-- DEAD POOL RISK: fee_tvl very low OR volatility < 2 OR LPer tier=weak (no credible LPers) → likely zero fees post-deploy
+SCORING GUIDANCE (multi-signal pattern from data analysis 2026-05-22):
+- TOP-TIER ENTRY (deploy aggressively): score ≥70 + RSI2 50+ + VWAP -15 to -5 + volume_spike + bin_step 80 + token_age > 72h + bot_pct < 18% → high-conviction
+- STRONG ENTRY: 5+ of above criteria met → standard deploy
+- WEAK ENTRY: ≤3 criteria met → consider skip even if score passes floor
+- DEAD POOL RISK: fee_tvl very low OR volatility < 2 OR token_age < 48h OR LPer tier=weak → likely zero fees post-deploy
 - PUMP TRAP: fee_tvl far above target (e.g. 5×+) + VWAP_dist positive → distribution phase, AVOID
+- FALLING KNIFE: RSI2 < 20 + VWAP < -25% → bait pattern, AVOID
 - Bot holders near filter cap (${config.screening.maxBotHoldersPct}%) = elevated risk, prefer pools with lower bot %
 
 LPER QUALITY SIGNAL (smart money confirmation layer):

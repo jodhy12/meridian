@@ -30,7 +30,7 @@ export const config = {
     minFeeActiveTvlRatio: u.minFeeActiveTvlRatio ?? 0.05,
     minTvl:            u.minTvl            ?? 10_000,
     maxTvl:            u.maxTvl !== undefined ? u.maxTvl : 150_000,
-    minVolume:         u.minVolume         ?? 500,
+    minVolume:         u.minVolume         ?? 3000,   // raised 2026-05-22 from 500 — winners median $14k volume, dead pools $5k; 3000 cuts 1-2 dead per 30 closes without losing winners
     minOrganic:        u.minOrganic        ?? 60,
     minQuoteOrganic:   u.minQuoteOrganic   ?? 60,
     minHolders:        u.minHolders        ?? 500,
@@ -52,7 +52,7 @@ export const config = {
     maxTokenAgeHours:   u.maxTokenAgeHours   ?? null, // null = no maximum
     athFilterPct:       u.athFilterPct       ?? null, // e.g. -20 = only deploy if price is >= 20% below ATH
     minVolatility:      u.minVolatility      ?? 2,    // hard-skip pools with volatility below this (data: vol<2 avg -0.37% PnL)
-    maxVolatility:      u.maxVolatility      ?? 3.5,  // hard-skip pools with volatility above this (data: vol>3.5 = stale-flat magnet, 25-close analysis)
+    maxVolatility:      u.maxVolatility      ?? 5.0,  // raised 2026-05-22 from 3.5 — extended data: vol 3.5-4 zone +0.82% avg/19% WR; vol 4-5 with safety nets caps catastrophic losses to -7%
     minDeployScore:     u.minDeployScore     ?? 55,   // minimum screening score to allow deploy (safety check in executor)
     minSwapCount:       u.minSwapCount       ?? 20,   // hard-skip pools with fewer swaps in timeframe (dead pool pre-filter)
     minUniqueTraders:   u.minUniqueTraders   ?? 15,   // hard-skip pools with fewer unique traders (bot-only activity)
@@ -133,6 +133,14 @@ export const config = {
     flatExitMinAgeMin:     u.flatExitMinAgeMin     ?? 120,
     flatExitMaxFeeYieldPct: u.flatExitMaxFeeYieldPct ?? 0.3,
     flatExitPnlBandPct:    u.flatExitPnlBandPct    ?? 1.0,
+
+    // ─── Rule 7b: Early-dead detection via fee-rate (2026-05-22) ───
+    // Data-derived: winners avg fee rate ~0.00015 SOL/min at 30-60m, marginals ~0.00009/min, dead ~0.00005/min
+    // Threshold catches dead/marginal patterns 30+ min earlier than rule 7 flat-fee check
+    earlyDeadEnabled:        u.earlyDeadEnabled        ?? true,
+    earlyDeadMinAge:         u.earlyDeadMinAge         ?? 25,    // start checking at age 25m
+    earlyDeadMaxAge:         u.earlyDeadMaxAge         ?? 45,    // stop checking at 45m (rule 7 takes over)
+    earlyDeadFeeRatePerMin:  u.earlyDeadFeeRatePerMin  ?? 0.00005, // SOL/min — below this = dead trajectory
 
     // ─── Rule 8 (max hold negative) refined thresholds ───
     maxHoldNegativePnlPct:      u.maxHoldNegativePnlPct      ?? -1.5,

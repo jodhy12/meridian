@@ -152,7 +152,17 @@ Timeframe: ${config.screening.timeframe} | fee_tvl floor: ${config.screening.min
 
 All candidates are pre-scored and pre-enriched. Pick the highest-score candidate that passes judgment and call deploy_position. Use bins_below/bins_above exactly as pre-computed.
 
-STRATEGY: bid_ask single-sided SOL (post-dip-then-recover LP thesis). Bearish supertrend + price below VWAP = ENTRY OPPORTUNITY, not a skip signal. Skip only on pump entries (VWAP > +5%, RSI2 > 65) or extreme dips with no support (VWAP < -30%). The deploy goal text contains the full thesis — read it.
+STRATEGY: bid_ask single-sided SOL (post-dip-then-recover LP thesis). Bearish supertrend + price below VWAP = ENTRY OPPORTUNITY, not a skip signal. Skip only on pump entries (VWAP > +5%, RSI2 > 70) or extreme dips with no support (VWAP < -25%, falling knife). The deploy goal text contains the full thesis — read it.
+
+GOLDEN ENTRY PATTERN (data-derived from 31 post-fix closes, updated 2026-05-22):
+- RSI2: PREFER 50+ (3/7=43% win, avg +2.27%) OR 20-30 (1/4=25% win, avg +1.43%). AVOID RSI2 <20 (3/13=23% win, avg only +0.14% — falling knife trap).
+- VWAP_dist: SWEET SPOT -15% to -5% (5/13=38% win, avg +1.41% — post-dip recovery). AVOID <-25% (0/2 wins) and >+5% (0/1 win, pump trap).
+- volume_spike=true: 2x win rate (2/5=40% vs 5/26=19% baseline) — strong positive signal.
+- token_age_hours: WINNERS avg 2032h (~84 days), LOSERS avg 46h (~2 days). PREFER established tokens (>72h).
+- bot_holders_pct: WINNERS avg 13.8%, LOSERS avg 22.9%. PREFER pools with bot_pct < 18%.
+- bin_step: PREFER 80 (37.5% WR) over 100 (19%) or 125 (0%).
+- score: WINNERS avg 75, LOSERS avg 57. Strong signal — trust the pre-computed score.
+- mcap: WINNERS avg $1.34M, LOSERS avg $720k. Bigger mcap = more stable.
 
 HARD RULES:
 - get_top_candidates returns 0 pools → output "⛔ NO DEPLOY — no candidates available" as final answer immediately. DO NOT call search_pools, get_token_info, check_smart_wallets_on_pool, or any other discovery tool to chase alternatives.

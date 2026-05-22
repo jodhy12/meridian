@@ -56,7 +56,7 @@ export function getCooldownByReason(reason) {
   const cfg = config.management;
   if (!r) return cfg.tokenCooldownHours ?? 2;
   // Critical first — overrides other matches (e.g. "dead pool — OOR after 4 min" should be critical, not direction)
-  if (r.includes("dead pool") || r.includes("near-zero fees") || r.includes("no fees") || r.includes("repeated oor")) {
+  if (r.includes("dead pool") || r.includes("near-zero fees") || r.includes("no fees") || r.includes("repeated oor") || r.includes("early dead detect")) {
     return cfg.cooldownCriticalHours ?? 12;
   }
   if (r.includes("il stop") || r.includes("stop loss") || r.includes("early il")) {
