@@ -77,11 +77,6 @@ export const config = {
     extremeOversoldRequiresSpike:    u.extremeOversoldRequiresSpike    ?? true,
     extremeOversoldExemptAgeHours:   u.extremeOversoldExemptAgeHours   ?? 72,
     extremeOversoldExemptMcap:       u.extremeOversoldExemptMcap       ?? 1000000,
-
-    // ─── ATH-proximity bin skew (2026-05-23) — flip asymmetric bins when entry near ATH ───
-    // If price_vs_ath_pct > threshold (e.g. >-10 = within 10% of ATH), skew bins_below>above
-    // Rationale: near ATH = limited upside, more dump risk → catch dip aggressively
-    athProximityThresholdPct: u.athProximityThresholdPct ?? -10,
   },
 
   // ─── Position Management ────────────────
@@ -103,9 +98,6 @@ export const config = {
     maxTrailingDurationMin: u.maxTrailingDurationMin ?? 180, // max minutes trailing TP can run (data: BURNIE 393m -7.73%, BabyTrump 346m -1.43%)
     tpCheckIntervalMin:    u.tpCheckIntervalMin    ?? 1,    // management cycle interval when position is in TP/danger zone (faster than normal)
     dangerZonePct:         u.dangerZonePct         ?? 2,    // trigger fast polling when PnL drops below -X%
-    // Adaptive PnL poll interval (2026-05-23): fast when TP/danger active, normal otherwise
-    pnlPollNormalSec:      u.pnlPollNormalSec      ?? 30,   // standard poll cadence (was 30s fixed before)
-    pnlPollFastSec:        u.pnlPollFastSec        ?? 5,    // fast poll when TP/danger zone active — reduces SL/TP slippage
     tokenCooldownHours:    u.tokenCooldownHours    ?? 2,    // fallback if close-reason doesn't match any category
     cooldownCriticalHours: u.cooldownCriticalHours ?? 12,   // dead pool, repeated OOR — structural broken
     cooldownILHours:       u.cooldownILHours       ?? 1.5,  // IL stop / stop loss / Early IL — V-shape window
@@ -311,6 +303,5 @@ export function reloadScreeningThresholds() {
     if (fresh.vwapPumpMax != null) s.vwapPumpMax = fresh.vwapPumpMax;
     if (fresh.rsi2Overbought != null) s.rsi2Overbought = fresh.rsi2Overbought;
     if (fresh.vwapFallingKnife != null) s.vwapFallingKnife = fresh.vwapFallingKnife;
-    if (fresh.athProximityThresholdPct != null) s.athProximityThresholdPct = fresh.athProximityThresholdPct;
   } catch { /* ignore */ }
 }

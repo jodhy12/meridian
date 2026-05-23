@@ -154,30 +154,13 @@ All candidates are pre-scored and pre-enriched. Pick the highest-score candidate
 
 STRATEGY: bid_ask single-sided SOL (post-dip-then-recover LP thesis). Bearish supertrend + price below VWAP = ENTRY OPPORTUNITY, not a skip signal. Skip only on pump entries (VWAP > +5%, RSI2 > 70) or extreme dips with no support (VWAP < -25%, falling knife). The deploy goal text contains the full thesis — read it.
 
-BEST MOMENT TRIGGERS (data-derived from 7-winner analysis, updated 2026-05-23):
-
-Pattern A — RECOVERY CONFIRMED (preferred, 4/7 winners avg +4-6%):
-  rsi2 25-65 + rsi2_trend > 0 (climbing) + vwap_dist -15 to +5% + supertrend up
-  = "bounce in progress, first green after red"
-
-Pattern B — CAPITULATION + VOLUME SPIKE (3/7 winners avg +2-4%):
-  rsi2 < 15 + volume_spike=TRUE + vwap_dist -15 to -22%
-  = "exhaustion bottom, buyer step-in confirmed"
-  WITHOUT volume_spike → SKIP (3/3 losers had RSI<20 + no spike = falling knife)
-
-BONUS signals (additive):
-- bin_step=80 preferred (37.5% WR vs 19% for bs=100)
-- token_age_hours > 72 (winners avg 84d, losers avg 2d)
-- bot_holders_pct < 18 (winners 13.8% vs losers 22.9%)
-- mcap > $1M (more stable swap volume)
-
-AVOID:
-- vwap_dist > +5% (pump trap)
-- rsi2 > 70 (overbought)
-- vwap_dist < -25% (falling knife)
-- rsi2 < 15 + no volume_spike (pure falling knife)
-- rsi2 15-25 + rsi2_trend < 0 (still falling, bounce not started)
-- rsi2 30-50 + no other strong signal (weak neutral zone, 0/7 wins)
+ENTRY GUIDANCE (general):
+- Sweet spot: vwap_dist -15% to -5% (post-dip recovering) + rsi2 25-65
+- BONUS if rsi2_trend > 0 (RSI climbing vs prev candle = bounce in progress)
+- BONUS if volume_spike at entry (= active buyer interest)
+- 1h supertrend bullish while 15m bearish = pullback in uptrend (best case)
+- Extreme oversold (rsi2 < 15) acceptable ONLY with volume_spike OR established token (age >= 72h + mcap >= $1M)
+- Bigger mcap = more stable swap volume; lower bot_holders_pct = healthier flow
 
 HARD RULES:
 - get_top_candidates returns 0 pools → output "⛔ NO DEPLOY — no candidates available" as final answer immediately. DO NOT call search_pools, get_token_info, check_smart_wallets_on_pool, or any other discovery tool to chase alternatives.

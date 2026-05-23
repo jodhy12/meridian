@@ -82,27 +82,34 @@ Sets defined in `agent.js:6-7`. If you add a tool, also add it to the relevant s
 | ----------------------------------------------- | ---------- | ----------------------- |
 | minFeeActiveTvlRatio                            | screening  | 0.05                    |
 | minTvl / maxTvl                                 | screening  | 10k / 150k              |
-| minVolume                                       | screening  | 500                     |
+| minVolume                                       | screening  | 3000 (raised 05-22)     |
+| minVolatility / maxVolatility                   | screening  | 2 / 5.0 (tightened)     |
+| minSwapCount / minUniqueTraders                 | screening  | 20 / 15                 |
 | minOrganic                                      | screening  | 60                      |
 | minHolders                                      | screening  | 500                     |
 | minMcap / maxMcap                               | screening  | 150k / 10M              |
 | minBinStep / maxBinStep                         | screening  | 80 / 125                |
 | timeframe                                       | screening  | "5m"                    |
 | category                                        | screening  | "trending"              |
-| minTokenFeesSol                                 | screening  | 30                      |
-| maxBundlersPct                                  | screening  | 30                      |
-| maxTop10Pct                                     | screening  | 60                      |
+| minTokenFeesSol                                 | screening  | 15                      |
+| maxBundlersPct / maxTop10Pct                    | screening  | 30 / 60                 |
 | blockedLaunchpads                               | screening  | []                      |
-| deployAmountSol                                 | management | 0.5                     |
-| maxDeployAmount                                 | risk       | 50                      |
-| maxPositions                                    | risk       | 3                       |
-| gasReserve                                      | management | 0.2                     |
+| **pumpTrapMultiTfRatio**                        | screening  | **12** (05-23)          |
+| **vwapPumpMax / rsi2Overbought / vwapFallingKnife** | screening | **8 / 70 / -25**     |
+| **bestMomentEnabled + extremeOversold***        | screening  | true / 15 / true / 72 / 1M |
+| deployAmountSol / minSolToOpen / gasReserve     | management | 0.5 / 0.7 / 0.1         |
+| maxDeployAmount / maxPositions                  | risk       | 50 / 3                  |
 | positionSizePct                                 | management | 0.35                    |
-| minSolToOpen                                    | management | 0.55                    |
+| stopLossPct / maxILPct                          | management | -7 / -7                 |
+| takeProfitFeePct                                | management | 3                       |
+| trailingTriggerPct / **trailingDropPct**        | management | 2.5 / **1.5** (05-23)   |
+| maxTrailingDurationMin                          | management | 180                     |
 | outOfRangeWaitMinutes                           | management | 30                      |
-| managementIntervalMin                           | schedule   | 10                      |
-| screeningIntervalMin                            | schedule   | 30                      |
-| managementModel / screeningModel / generalModel | llm        | openrouter/healer-alpha |
+| **flatExitMinAgeMin**                           | management | **60** (lowered 05-22)  |
+| **earlyDeadEnabled / MinAge / MaxAge / FeeRatePerMin** | management | true / 25 / 45 / 0.00005 |
+| dangerZonePct / tpCheckIntervalMin              | management | 2 / 1                   |
+| managementIntervalMin / screeningIntervalMin    | schedule   | 5 / 15                  |
+| managementModel / screeningModel / generalModel | llm        | deepseek-v4             |
 
 **`computeDeployAmount(walletSol)`** — scales position size with wallet balance (compounding). Formula: `clamp(deployable × positionSizePct, floor=deployAmountSol, ceil=maxDeployAmount)`.
 
@@ -149,6 +156,20 @@ In management cycle, after position age 25-45m:
 - Reason: "Early dead detect" → cooldown 12h critical class
 - Backtest: 0 false positives on 31 closes, saves 60-90m capital per dead deploy
 
+## fees_sol tracking (added 2026-05-23)
+
+`global_fees_sol` (total cumulative priority/jito tips paid by ALL traders since token launch) recorded in `signal_snapshot`. Hard filter `minTokenFeesSol: 15` (data-backed: <3 suspicious, >15 strong organic). Not timeframe-scoped — applies regardless of screening.timeframe.
+
+## Manual close with reason (Telegram)
+
+`/close <n> [reason text...]` — accepts free-form reason. Examples:
+- `/close 1`
+- `/close 1 trend looks weak`
+- `/close 2 reason: capitulation`
+- `/close 1 — exit on rsi flip`
+
+Reason flows through `closePosition()` → `recordPerformance()` → cooldown classifier in pool-memory.js. Telegram displays via shared `notifyClose()` format (gas + net PnL after gas).
+
 ---
 
 ## Screener Safety Checks (executor.js)
@@ -167,7 +188,7 @@ Before `deploy_position` executes:
 
 ## bins_below / bins_above Calculation (SCREENER)
 
-ATR-based formula in [tools/ohlcv.js](tools/ohlcv.js) — tightened 2026-05-22 from `[15,30]` to `[10,18]` for more concentrated liquidity. Asymmetric mirror in [index.js](index.js) — `bins_above = bins_below × 1.5` for OOR-up pump protection.
+ATR-based formula in [tools/ohlcv.js](tools/ohlcv.js) — tightened 2026-05-22 from `[15,30]` to `[10,18]` for more concentrated liquidity. Asymmetric bins in [index.js](index.js): `bins_above = bins_below × 1.5` (more room above active for OOR-up pump protection).
 
 ```
 bins_below = round(10 + (atrPct / 10) * 8), clamped to [10, 18]

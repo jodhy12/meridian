@@ -339,15 +339,7 @@ async function maybeRunMissedBriefing() {
 
 function stopCronJobs() {
   for (const task of _cronTasks) task.stop();
-  // _pnlPollInterval is now an object with .clear() method (adaptive setTimeout pattern)
-  // Also handle legacy setInterval handle for safety
-  if (_cronTasks._pnlPollInterval) {
-    if (typeof _cronTasks._pnlPollInterval.clear === "function") {
-      _cronTasks._pnlPollInterval.clear();
-    } else {
-      clearInterval(_cronTasks._pnlPollInterval);
-    }
-  }
+  if (_cronTasks._pnlPollInterval) clearInterval(_cronTasks._pnlPollInterval);
   _cronTasks = [];
 }
 
@@ -663,29 +655,17 @@ export async function runManagementCycle({ silent = false } = {}) {
         const exitSignal = tech?.exit_signal ?? false;
         const volSpike = tech?.indicators?.volume_spike?.is_spike ?? false;
         const feeDying = (p.fee_per_tvl_24h ?? 999) < config.management.minFeePerTvl24h;
-        // Forward-looking momentum flip detection — added 2026-05-23
-        // Only at PnL >= 5% (position has run substantial, peak detection matters more)
-        // Trigger: RSI peaked high (>=65) AND just dropped sharply (>=10 points in last candle) = momentum turning over
-        // Catches LADA-style fade (peak 9% → trail close 6%) by exiting BEFORE full reversal
-        const rsi2 = tech?.indicators?.rsi2 ?? null;
-        const rsi2Trend = tech?.indicators?.rsi2_trend ?? null;
-        const momentumFlipping = p.pnl_pct >= 5
-                              && rsi2 !== null && rsi2Trend !== null
-                              && rsi2 >= 65
-                              && rsi2Trend <= -10;
-        const shouldClose = exitSignal || (feeDying && !volSpike) || momentumFlipping;
+        const shouldClose = exitSignal || (feeDying && !volSpike);
         setLastTpCheckPct(p.position, floor);
         if (shouldClose) {
           const reason = exitSignal
             ? `TP exit: ${tech.exit_reason} at ${p.pnl_pct.toFixed(2)}%`
-            : momentumFlipping
-            ? `TP exit: momentum flipping (RSI ${rsi2.toFixed(1)} dropped Δ${rsi2Trend.toFixed(1)}) at ${p.pnl_pct.toFixed(2)}%`
             : `TP exit: fees dying (fee/tvl=${p.fee_per_tvl_24h}) at ${p.pnl_pct.toFixed(2)}%`;
           actionMap.set(p.position, { action: "CLOSE", rule: 2, reason });
           log("cron", `[TP Analysis] ${p.pair}: CLOSE — ${reason}`);
         } else {
           actionMap.set(p.position, { action: "STAY" });
-          log("cron", `[TP Analysis] ${p.pair}: HOLD at ${p.pnl_pct.toFixed(2)}% (fees healthy, no exit signal, momentum stable) — next check at ${floor + 1}%`);
+          log("cron", `[TP Analysis] ${p.pair}: HOLD at ${p.pnl_pct.toFixed(2)}% (fees healthy, no exit signal) — next check at ${floor + 1}%`);
         }
       } catch (e) {
         log("cron_warn", `[TP Analysis] Failed for ${p.pair}: ${e.message} — fallback to hard TP`);
@@ -988,24 +968,14 @@ export async function runScreeningCycle({ silent = false } = {}) {
         continue;
       }
 
-      // 2e. Pre-compute bins — bid_ask asymmetric
-      // Default: tight bins_below + wider bins_above (1.5×) for OOR-up protection during pump
-      // ATH-skew (2026-05-23): if entry near ATH (limited upside), flip — more bins_below to catch dump
+      // 2e. Pre-compute bins — bid_ask asymmetric: tight bins_below for fee concentration,
+      // wider bins_above for OOR-up protection during pump (1.5× factor)
       const vol = Number(pool.volatility || 3);
       const binsBelowCalc = Math.min(22, Math.max(15, Math.round(15 + (vol / 5) * 7)));
       const atrBins = tech?.suggested_bins_below ?? null;
       const baseBins = atrBins ?? binsBelowCalc;
-      const pricePctVsAth = pool.price_vs_ath_pct ?? null;
-      const athProximityThreshold = config.screening.athProximityThresholdPct ?? -10;
-      const nearAth = pricePctVsAth !== null && pricePctVsAth > athProximityThreshold;  // e.g. -5% (within 5% of ATH)
-      if (nearAth) {
-        pool._bins_below = Math.round(baseBins * 1.5);  // catch dump aggressively
-        pool._bins_above = baseBins;                     // less room above (limited upside)
-        log("screening", `${pool.name} — near-ATH (${pricePctVsAth.toFixed(1)}% > ${athProximityThreshold}%): bins skewed BELOW (${pool._bins_below}/${pool._bins_above})`);
-      } else {
-        pool._bins_below = baseBins;
-        pool._bins_above = Math.round(baseBins * 1.5);
-      }
+      pool._bins_below = baseBins;
+      pool._bins_above = Math.round(baseBins * 1.5);
       // bid_ask thesis: bearish supertrend + post-dip = OPPORTUNITY, not warning
       // We're LPing, not directional trading. Fees come from frantic dip-buyers at the bottom.
       const _rsi2 = tech?.indicators?.rsi2 ?? 50;
@@ -1265,55 +1235,35 @@ Our profit comes from: dip happens → our SOL converts to token at cheap basis 
 THIS MEANS bearish supertrend + price below VWAP + RSI2 in recovery zone = OPPORTUNITY, not danger.
 The "scary" entries that directional traders avoid (post-dip, bearish trend) are EXACTLY where bid_ask LP wins.
 
-BEST MOMENT TRIGGERS (derived from 7-winner pattern, updated 2026-05-23):
-
-🅰️ PATTERN A — "Recovery Confirmed" (PREFERRED, 4/7 winners):
-- RSI2 between 25-65 (bounced from oversold, momentum returning)
-- rsi2_trend > 0 (RSI climbing vs previous candle — bounce in progress)
-- VWAP_dist -15% to +5% (post-dip recovering toward mean)
-- Supertrend up OR just flipped up
-- "First green candle after red sequence" pattern
-- Avg PnL: +4-6%
-
-🅱️ PATTERN B — "Capitulation + Volume Spike" (3/7 winners):
-- RSI2 < 15 (extreme bottom)
-- volume_spike = TRUE (buyer step-in confirmed)
-- VWAP_dist -15% to -22% (deep dip)
-- "Exhaustion bottom" signal
-- Avg PnL: +2-4% (smaller wins)
-- WITHOUT volume_spike = SKIP (3/3 losers had RSI<20 + no spike)
-
-GOOD ENTRY:
-- Matches Pattern A or Pattern B
-- BONUS signals: bin_step=80 (37.5% WR vs 19%), token_age>72h, bot_pct<18%, mcap>1M
+GOOD ENTRY (deploy):
+- VWAP_dist between -15% and -5% (post-dip recovering — sweet spot)
+- RSI2 between 25 and 65 (not overbought, not extreme oversold)
+- BONUS: rsi2_trend > 0 (RSI climbing = bounce in progress)
+- BONUS: volume_spike = true (active buyer interest at entry)
+- Supertrend bearish on 15m is FINE — we want the dip
+- Bonus case: 1h supertrend up while 15m bearish = pullback in uptrend (best)
 
 BAD ENTRY (skip):
-- VWAP_dist > +5% → pump entry, will reverse
-- RSI2 > 70 → overbought
-- VWAP_dist < -25% → falling knife (0/2 wins)
-- RSI2 < 15 WITHOUT volume_spike → pure falling knife (no buyer step-in yet)
-- RSI2 15-25 with rsi2_trend < 0 (still falling) → bounce not started
-- RSI2 30-50 → neutral zone, weak signal (0/7 wins, avg +0.15%)
+- VWAP_dist > +5% → pump entry, will reverse against us
+- RSI2 > 70 → overbought, wait for cooldown
+- VWAP_dist < -25% → falling knife, no support, may break range
+- RSI2 < 15 WITHOUT volume_spike + NOT established (age >= 72h + mcap >= $1M) → pure falling knife
 - exit_signal_active → momentum already exhausted
-- token_age_hours < 48 → fresh tokens lose 2x more (rug risk)
-- bot_holders_pct > 20 → bot-heavy pools underperform
 
 DEPLOY RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. Pick the highest-score candidate that passes the BID_ASK THESIS judgment above.
-   Score ≥ ${config.screening.minDeployScore + 15} = strong deploy if entry zone OK. ${config.screening.minDeployScore}–${config.screening.minDeployScore + 14} = deploy only if entry zone is clearly post-dip + volume spike. < ${config.screening.minDeployScore} = skip.
-2. SKIP only if: exit_signal_active OR VWAP_dist outside [-25%, +5%] OR RSI2 > 70 OR RSI2 < 20.
+   Score ≥ ${config.screening.minDeployScore + 15} = strong deploy if entry zone OK. ${config.screening.minDeployScore}–${config.screening.minDeployScore + 14} = deploy only if entry zone is clearly post-dip. < ${config.screening.minDeployScore} = skip.
+2. SKIP only if: exit_signal_active OR VWAP_dist outside [-25%, +5%] OR RSI2 > 70.
    DO NOT skip on bearish supertrend alone — that is the entry, not the exit.
 3. Use bins_below/bins_above exactly as pre-computed — do NOT recalculate.
 4. Call deploy_position with: strategy="bid_ask", amount_y=${deployAmount}
 
-SCORING GUIDANCE (multi-signal pattern from data analysis 2026-05-22):
-- TOP-TIER ENTRY (deploy aggressively): score ≥70 + RSI2 50+ + VWAP -15 to -5 + volume_spike + bin_step 80 + token_age > 72h + bot_pct < 18% → high-conviction
-- STRONG ENTRY: 5+ of above criteria met → standard deploy
-- WEAK ENTRY: ≤3 criteria met → consider skip even if score passes floor
-- DEAD POOL RISK: fee_tvl very low OR volatility < 2 OR token_age < 48h OR LPer tier=weak → likely zero fees post-deploy
+SCORING GUIDANCE (multi-signal pattern recognition):
+- SWEET SPOT: fee_tvl near scoring target + vol 2-4 + organic ≥ 70 + VWAP_dist in [-15%, -5%] + RSI2 in [25, 65] + LPer tier=elite/good → strong deploy
+- DEAD POOL RISK: fee_tvl very low OR volatility < 2 OR LPer tier=weak (no credible LPers) → likely zero fees post-deploy
 - PUMP TRAP: fee_tvl far above target (e.g. 5×+) + VWAP_dist positive → distribution phase, AVOID
-- FALLING KNIFE: RSI2 < 20 + VWAP < -25% → bait pattern, AVOID
+- FALLING KNIFE: RSI2 < 15 + no volume_spike + fresh token → bait pattern, AVOID
 - Bot holders near filter cap (${config.screening.maxBotHoldersPct}%) = elevated risk, prefer pools with lower bot %
 
 LPER QUALITY SIGNAL (smart money confirmation layer):
@@ -1409,31 +1359,12 @@ Summarize the current portfolio health, total fees earned, and performance of al
     await maybeRunMissedBriefing();
   }, { timezone: 'UTC' });
 
-  // Adaptive PnL poller (2026-05-23) — recursive setTimeout with dynamic interval
-  // Normal: poll every `pnlPollNormalSec` (default 30s)
-  // Danger/TP zone: poll every `pnlPollFastSec` (default 5s) for faster SL/TP trigger
-  // Friend's strategy validation: 5s polling reduces slippage on dumping positions
+  // Lightweight 30s PnL poller — updates trailing TP state between management cycles, no LLM
   let _pnlPollBusy = false;
-  let _pnlPollTimeoutId = null;
-  let _lastPnlPollHadDangerOrTp = false;
-  const pollNormalMs = (config.management.pnlPollNormalSec ?? 30) * 1000;
-  const pollFastMs   = (config.management.pnlPollFastSec   ?? 5)  * 1000;
-  const schedulePoll = (delayMs) => {
-    _pnlPollTimeoutId = setTimeout(runPnlPoll, delayMs);
-  };
-  async function runPnlPoll() {
-    if (_managementBusy || _screeningBusy || _pnlPollBusy) {
-      schedulePoll(pollNormalMs);  // retry next cycle
-      return;
-    }
-    if ((timers._lastKnownPositionCount ?? 0) === 0) {
-      _lastPnlPollHadDangerOrTp = false;
-      schedulePoll(pollNormalMs);
-      return;
-    }
+  const pnlPollInterval = setInterval(async () => {
+    if (_managementBusy || _screeningBusy || _pnlPollBusy) return;
+    if ((timers._lastKnownPositionCount ?? 0) === 0) return; // no positions → skip RPC
     _pnlPollBusy = true;
-    // Reset state — will be set true if any position is in TP/danger zone during loop
-    _lastPnlPollHadDangerOrTp = false;
     try {
       const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
       // Sync count from fetch result — handles case where LLM/manual close happened between cycles
@@ -1493,22 +1424,15 @@ Summarize the current portfolio health, total fees earned, and performance of al
           runManagementCycle({ silent: false }).catch((e) => log("cron_error", `${zone}-triggered management failed: ${e.message}`));
         }
       }
-      // Track danger/TP state for next poll interval — fast (5s) when active, normal (30s) otherwise
-      _lastPnlPollHadDangerOrTp = needsFast;
     } finally {
       _pnlPollBusy = false;
-      // Schedule next poll dynamically based on state
-      const nextDelayMs = _lastPnlPollHadDangerOrTp ? pollFastMs : pollNormalMs;
-      schedulePoll(nextDelayMs);
     }
-  }
-  // Kick off the recursive poller
-  schedulePoll(pollNormalMs);
+  }, 30_000);
 
   _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog];
-  // Store timeout ref so stopCronJobs can clear it
-  _cronTasks._pnlPollInterval = { clear: () => { if (_pnlPollTimeoutId) clearTimeout(_pnlPollTimeoutId); } };
-  log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m, PnL poll ${pollNormalMs/1000}s (fast ${pollFastMs/1000}s when TP/danger active)`);
+  // Store interval ref so stopCronJobs can clear it
+  _cronTasks._pnlPollInterval = pnlPollInterval;
+  log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
 }
 
 // ═══════════════════════════════════════════
