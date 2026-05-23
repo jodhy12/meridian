@@ -1082,6 +1082,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         bot_holders_pct: ti?.audit?.bot_holders_pct != null ? Number(ti.audit.bot_holders_pct) : null,
         bundle_pct: pool.bundle_pct ?? ti?.bundle_pct ?? null,
         smart_wallets_present: pool.smart_wallets_present ?? null,
+        global_fees_sol: ti?.global_fees_sol ?? null,  // priority+jito tips — low = bundled/scam, high = legit activity
         // Activity (from Meteora API — best dead pool predictor)
         swap_count: pool.swap_count ?? null,
         unique_traders: pool.unique_traders ?? null,
