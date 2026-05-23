@@ -1024,20 +1024,24 @@ export async function runScreeningCycle({ silent = false } = {}) {
       }
 
       // bid_ask anti-pump entry filter — thesis = buy-dip-recover, so reject pump entry
+      // Thresholds tunable via user-config (2026-05-23): vwapPumpMax, rsi2Overbought, vwapFallingKnife
       const rsi2 = tech?.indicators?.rsi2 ?? null;
       const rsi2Trend = tech?.indicators?.rsi2_trend ?? null;
       const volSpikeNow = tech?.indicators?.volume_spike?.is_spike ?? false;
-      if (vwapDist > 5) {
-        log("screening", `Filtered ${pool.name} — price +${vwapDist.toFixed(1)}% above VWAP, pump entry not aligned with bid_ask thesis`);
+      const vwapPumpMax = config.screening.vwapPumpMax ?? 8;
+      const rsi2Overbought = config.screening.rsi2Overbought ?? 70;
+      const vwapFallingKnife = config.screening.vwapFallingKnife ?? -25;
+      if (vwapDist > vwapPumpMax) {
+        log("screening", `Filtered ${pool.name} — price +${vwapDist.toFixed(1)}% above VWAP (> ${vwapPumpMax}%), pump entry not aligned with bid_ask thesis`);
         continue;
       }
-      if (rsi2 !== null && rsi2 > 70) {
-        log("screening", `Filtered ${pool.name} — RSI2=${rsi2.toFixed(1)} overbought, wait for cooldown before bid_ask entry`);
+      if (rsi2 !== null && rsi2 > rsi2Overbought) {
+        log("screening", `Filtered ${pool.name} — RSI2=${rsi2.toFixed(1)} > ${rsi2Overbought} overbought, wait for cooldown before bid_ask entry`);
         continue;
       }
       // Falling knife guard — too deep below VWAP = no support, dip may continue past range
-      if (vwapDist < -25) {
-        log("screening", `Filtered ${pool.name} — price ${vwapDist.toFixed(1)}% below VWAP, falling knife — wait for first bounce`);
+      if (vwapDist < vwapFallingKnife) {
+        log("screening", `Filtered ${pool.name} — price ${vwapDist.toFixed(1)}% below VWAP (< ${vwapFallingKnife}%), falling knife — wait for first bounce`);
         continue;
       }
       // Best Moment filter — added 2026-05-23 from 7-winner pattern analysis (backtest validated)

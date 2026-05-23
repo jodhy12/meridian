@@ -144,7 +144,14 @@ export const config = {
 
     // ─── Pump trap multi-TF threshold (2026-05-23) ───
     // 4h fee_tvl / current_tf fee_tvl ratio threshold — higher = looser filter (allows more candidates)
-    pumpTrapMultiTfRatio:    u.pumpTrapMultiTfRatio    ?? 8,    // raised from 5 (May 22: 33% blocks in 5-8x borderline range)
+    // Tuning history: 5 (initial) → 8 (relaxed) → 12 (further relaxed, allow Bank-style active pumps)
+    pumpTrapMultiTfRatio:    u.pumpTrapMultiTfRatio    ?? 12,
+
+    // ─── VWAP / RSI entry-zone thresholds (2026-05-23) ───
+    // Tunable to balance "block pump traps" vs "allow active uptrend entry"
+    vwapPumpMax:             u.vwapPumpMax             ?? 8,    // SKIP if price > X% above VWAP. Tuning: 5 (too strict, rejected Bank-style) → 8 (default, allow active pump-in-progress)
+    rsi2Overbought:          u.rsi2Overbought          ?? 70,   // SKIP if RSI2 > X. 70 = overbought zone
+    vwapFallingKnife:        u.vwapFallingKnife        ?? -25,  // SKIP if price < X% below VWAP. -25 = no support
 
     // ─── Best Moment filter (2026-05-23) — Pattern A/B entry detection ───
     // Data-derived from 7-winner analysis: RSI<15 + no_spike + fresh/small mcap = falling knife (loses)
@@ -298,5 +305,8 @@ export function reloadScreeningThresholds() {
     if (fresh.extremeOversoldExemptAgeHours != null) s.extremeOversoldExemptAgeHours = fresh.extremeOversoldExemptAgeHours;
     if (fresh.extremeOversoldExemptMcap != null) s.extremeOversoldExemptMcap = fresh.extremeOversoldExemptMcap;
     if (fresh.pumpTrapMultiTfRatio != null) s.pumpTrapMultiTfRatio = fresh.pumpTrapMultiTfRatio;
+    if (fresh.vwapPumpMax != null) s.vwapPumpMax = fresh.vwapPumpMax;
+    if (fresh.rsi2Overbought != null) s.rsi2Overbought = fresh.rsi2Overbought;
+    if (fresh.vwapFallingKnife != null) s.vwapFallingKnife = fresh.vwapFallingKnife;
   } catch { /* ignore */ }
 }
