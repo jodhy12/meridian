@@ -62,6 +62,26 @@ export const config = {
     qualityMinHolders:  u.qualityMinHolders  ?? 500,
     qualityMinFeeRatio: u.qualityMinFeeRatio ?? 0.5,
     qualityTopN:        u.qualityTopN        ?? 5,
+
+    // ─── Pump trap multi-TF threshold (2026-05-23, MOVED to screening section) ───
+    pumpTrapMultiTfRatio:    u.pumpTrapMultiTfRatio    ?? 12,
+
+    // ─── VWAP / RSI entry-zone thresholds (2026-05-23) ───
+    vwapPumpMax:             u.vwapPumpMax             ?? 8,    // SKIP if price > X% above VWAP
+    rsi2Overbought:          u.rsi2Overbought          ?? 70,   // SKIP if RSI2 > X (overbought zone)
+    vwapFallingKnife:        u.vwapFallingKnife        ?? -25,  // SKIP if price < X% below VWAP (no support)
+
+    // ─── Best Moment filter (2026-05-23) — Pattern A/B entry detection ───
+    bestMomentEnabled:               u.bestMomentEnabled               ?? true,
+    extremeOversoldRsiThreshold:     u.extremeOversoldRsiThreshold     ?? 15,
+    extremeOversoldRequiresSpike:    u.extremeOversoldRequiresSpike    ?? true,
+    extremeOversoldExemptAgeHours:   u.extremeOversoldExemptAgeHours   ?? 72,
+    extremeOversoldExemptMcap:       u.extremeOversoldExemptMcap       ?? 1000000,
+
+    // ─── ATH-proximity bin skew (2026-05-23) — flip asymmetric bins when entry near ATH ───
+    // If price_vs_ath_pct > threshold (e.g. >-10 = within 10% of ATH), skew bins_below>above
+    // Rationale: near ATH = limited upside, more dump risk → catch dip aggressively
+    athProximityThresholdPct: u.athProximityThresholdPct ?? -10,
   },
 
   // ─── Position Management ────────────────
@@ -83,6 +103,9 @@ export const config = {
     maxTrailingDurationMin: u.maxTrailingDurationMin ?? 180, // max minutes trailing TP can run (data: BURNIE 393m -7.73%, BabyTrump 346m -1.43%)
     tpCheckIntervalMin:    u.tpCheckIntervalMin    ?? 1,    // management cycle interval when position is in TP/danger zone (faster than normal)
     dangerZonePct:         u.dangerZonePct         ?? 2,    // trigger fast polling when PnL drops below -X%
+    // Adaptive PnL poll interval (2026-05-23): fast when TP/danger active, normal otherwise
+    pnlPollNormalSec:      u.pnlPollNormalSec      ?? 30,   // standard poll cadence (was 30s fixed before)
+    pnlPollFastSec:        u.pnlPollFastSec        ?? 5,    // fast poll when TP/danger zone active — reduces SL/TP slippage
     tokenCooldownHours:    u.tokenCooldownHours    ?? 2,    // fallback if close-reason doesn't match any category
     cooldownCriticalHours: u.cooldownCriticalHours ?? 12,   // dead pool, repeated OOR — structural broken
     cooldownILHours:       u.cooldownILHours       ?? 1.5,  // IL stop / stop loss / Early IL — V-shape window
@@ -141,26 +164,6 @@ export const config = {
     earlyDeadMinAge:         u.earlyDeadMinAge         ?? 25,    // start checking at age 25m
     earlyDeadMaxAge:         u.earlyDeadMaxAge         ?? 45,    // stop checking at 45m (rule 7 takes over)
     earlyDeadFeeRatePerMin:  u.earlyDeadFeeRatePerMin  ?? 0.00005, // SOL/min — below this = dead trajectory
-
-    // ─── Pump trap multi-TF threshold (2026-05-23) ───
-    // 4h fee_tvl / current_tf fee_tvl ratio threshold — higher = looser filter (allows more candidates)
-    // Tuning history: 5 (initial) → 8 (relaxed) → 12 (further relaxed, allow Bank-style active pumps)
-    pumpTrapMultiTfRatio:    u.pumpTrapMultiTfRatio    ?? 12,
-
-    // ─── VWAP / RSI entry-zone thresholds (2026-05-23) ───
-    // Tunable to balance "block pump traps" vs "allow active uptrend entry"
-    vwapPumpMax:             u.vwapPumpMax             ?? 8,    // SKIP if price > X% above VWAP. Tuning: 5 (too strict, rejected Bank-style) → 8 (default, allow active pump-in-progress)
-    rsi2Overbought:          u.rsi2Overbought          ?? 70,   // SKIP if RSI2 > X. 70 = overbought zone
-    vwapFallingKnife:        u.vwapFallingKnife        ?? -25,  // SKIP if price < X% below VWAP. -25 = no support
-
-    // ─── Best Moment filter (2026-05-23) — Pattern A/B entry detection ───
-    // Data-derived from 7-winner analysis: RSI<15 + no_spike + fresh/small mcap = falling knife (loses)
-    // Established tokens (age>=72h + mcap>=$1M) can survive extreme oversold without spike
-    bestMomentEnabled:               u.bestMomentEnabled               ?? true,
-    extremeOversoldRsiThreshold:     u.extremeOversoldRsiThreshold     ?? 15,        // RSI2 below this = extreme oversold
-    extremeOversoldRequiresSpike:    u.extremeOversoldRequiresSpike    ?? true,      // require volume_spike if extreme oversold
-    extremeOversoldExemptAgeHours:   u.extremeOversoldExemptAgeHours   ?? 72,        // age >= this allows skip-spike exemption
-    extremeOversoldExemptMcap:       u.extremeOversoldExemptMcap       ?? 1000000,  // mcap >= this allows skip-spike exemption
 
     // ─── Rule 8 (max hold negative) refined thresholds ───
     maxHoldNegativePnlPct:      u.maxHoldNegativePnlPct      ?? -1.5,
@@ -308,5 +311,6 @@ export function reloadScreeningThresholds() {
     if (fresh.vwapPumpMax != null) s.vwapPumpMax = fresh.vwapPumpMax;
     if (fresh.rsi2Overbought != null) s.rsi2Overbought = fresh.rsi2Overbought;
     if (fresh.vwapFallingKnife != null) s.vwapFallingKnife = fresh.vwapFallingKnife;
+    if (fresh.athProximityThresholdPct != null) s.athProximityThresholdPct = fresh.athProximityThresholdPct;
   } catch { /* ignore */ }
 }

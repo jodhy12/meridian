@@ -10,7 +10,7 @@ import { getTopCandidates, getPoolDetail } from "./tools/screening.js";
 import { config, reloadScreeningThresholds, computeDeployAmount } from "./config.js";
 import { evolveThresholds, getPerformanceSummary, backfillSignalSnapshots, recordScreeningOutcome } from "./lessons.js";
 import { registerCronRestarter, executeTool } from "./tools/executor.js";
-import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled, createLiveMessage } from "./telegram.js";
+import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, notifyClose, isEnabled as telegramEnabled, createLiveMessage } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
 import { getLastBriefingDate, setLastBriefingDate, getTrackedPosition, getTrackedPositions, setPositionInstruction, setLastTpCheckPct, updatePnlAndCheckExits, queuePeakConfirmation, resolvePendingPeak, queueTrailingDropConfirmation, resolvePendingTrailingDrop, reconcileFromLessons } from "./state.js";
 import { recordPositionSnapshot, recallForPool, addPoolNote } from "./pool-memory.js";
@@ -339,7 +339,15 @@ async function maybeRunMissedBriefing() {
 
 function stopCronJobs() {
   for (const task of _cronTasks) task.stop();
-  if (_cronTasks._pnlPollInterval) clearInterval(_cronTasks._pnlPollInterval);
+  // _pnlPollInterval is now an object with .clear() method (adaptive setTimeout pattern)
+  // Also handle legacy setInterval handle for safety
+  if (_cronTasks._pnlPollInterval) {
+    if (typeof _cronTasks._pnlPollInterval.clear === "function") {
+      _cronTasks._pnlPollInterval.clear();
+    } else {
+      clearInterval(_cronTasks._pnlPollInterval);
+    }
+  }
   _cronTasks = [];
 }
 
@@ -910,8 +918,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
       // 2e-bonus. Multi-TF Fee/TVL pump trap detection
       // Pump pattern: fee_tvl(4h) >> fee_tvl(current TF) = sustained pump dropping = post-pump phase
       // Healthy: ratios consistent across TFs
-      // Threshold raised 2026-05-23 from 5× to 8× — May 22 log showed 33% of blocks (128 of 388) were
-      // in borderline 5-8× range, blocking pools like Bank-SOL repeatedly. 8× still catches strong pump traps.
+      // Threshold raised 2026-05-23 from 5× to 8× → 12× — May 22 log showed 33% of blocks (128 of 388) were
+      // in borderline 5-8× range. Loosened to allow active-pump pools through (general policy, all tokens).
       try {
         const pool4h = await getPoolDetail({ pool_address: pool.pool, timeframe: "4h" });
         const fee4h = Number(pool4h?.fee_active_tvl_ratio || 0);
@@ -980,15 +988,24 @@ export async function runScreeningCycle({ silent = false } = {}) {
         continue;
       }
 
-      // 2e. Pre-compute bins — bid_ask asymmetric: tight bins_below for fee concentration,
-      // wider bins_above for OOR-up protection during pump (1.5× factor)
-      // Changed 2026-05-22: paired with maxVol 5.0 — pump pools need range to ride upward move
+      // 2e. Pre-compute bins — bid_ask asymmetric
+      // Default: tight bins_below + wider bins_above (1.5×) for OOR-up protection during pump
+      // ATH-skew (2026-05-23): if entry near ATH (limited upside), flip — more bins_below to catch dump
       const vol = Number(pool.volatility || 3);
       const binsBelowCalc = Math.min(22, Math.max(15, Math.round(15 + (vol / 5) * 7)));
       const atrBins = tech?.suggested_bins_below ?? null;
       const baseBins = atrBins ?? binsBelowCalc;
-      pool._bins_below = baseBins;
-      pool._bins_above = Math.round(baseBins * 1.5);
+      const pricePctVsAth = pool.price_vs_ath_pct ?? null;
+      const athProximityThreshold = config.screening.athProximityThresholdPct ?? -10;
+      const nearAth = pricePctVsAth !== null && pricePctVsAth > athProximityThreshold;  // e.g. -5% (within 5% of ATH)
+      if (nearAth) {
+        pool._bins_below = Math.round(baseBins * 1.5);  // catch dump aggressively
+        pool._bins_above = baseBins;                     // less room above (limited upside)
+        log("screening", `${pool.name} — near-ATH (${pricePctVsAth.toFixed(1)}% > ${athProximityThreshold}%): bins skewed BELOW (${pool._bins_below}/${pool._bins_above})`);
+      } else {
+        pool._bins_below = baseBins;
+        pool._bins_above = Math.round(baseBins * 1.5);
+      }
       // bid_ask thesis: bearish supertrend + post-dip = OPPORTUNITY, not warning
       // We're LPing, not directional trading. Fees come from frantic dip-buyers at the bottom.
       const _rsi2 = tech?.indicators?.rsi2 ?? 50;
@@ -1392,12 +1409,31 @@ Summarize the current portfolio health, total fees earned, and performance of al
     await maybeRunMissedBriefing();
   }, { timezone: 'UTC' });
 
-  // Lightweight 30s PnL poller — updates trailing TP state between management cycles, no LLM
+  // Adaptive PnL poller (2026-05-23) — recursive setTimeout with dynamic interval
+  // Normal: poll every `pnlPollNormalSec` (default 30s)
+  // Danger/TP zone: poll every `pnlPollFastSec` (default 5s) for faster SL/TP trigger
+  // Friend's strategy validation: 5s polling reduces slippage on dumping positions
   let _pnlPollBusy = false;
-  const pnlPollInterval = setInterval(async () => {
-    if (_managementBusy || _screeningBusy || _pnlPollBusy) return;
-    if ((timers._lastKnownPositionCount ?? 0) === 0) return; // no positions → skip RPC
+  let _pnlPollTimeoutId = null;
+  let _lastPnlPollHadDangerOrTp = false;
+  const pollNormalMs = (config.management.pnlPollNormalSec ?? 30) * 1000;
+  const pollFastMs   = (config.management.pnlPollFastSec   ?? 5)  * 1000;
+  const schedulePoll = (delayMs) => {
+    _pnlPollTimeoutId = setTimeout(runPnlPoll, delayMs);
+  };
+  async function runPnlPoll() {
+    if (_managementBusy || _screeningBusy || _pnlPollBusy) {
+      schedulePoll(pollNormalMs);  // retry next cycle
+      return;
+    }
+    if ((timers._lastKnownPositionCount ?? 0) === 0) {
+      _lastPnlPollHadDangerOrTp = false;
+      schedulePoll(pollNormalMs);
+      return;
+    }
     _pnlPollBusy = true;
+    // Reset state — will be set true if any position is in TP/danger zone during loop
+    _lastPnlPollHadDangerOrTp = false;
     try {
       const result = await getMyPositions({ force: true, silent: true }).catch(() => null);
       // Sync count from fetch result — handles case where LLM/manual close happened between cycles
@@ -1457,15 +1493,22 @@ Summarize the current portfolio health, total fees earned, and performance of al
           runManagementCycle({ silent: false }).catch((e) => log("cron_error", `${zone}-triggered management failed: ${e.message}`));
         }
       }
+      // Track danger/TP state for next poll interval — fast (5s) when active, normal (30s) otherwise
+      _lastPnlPollHadDangerOrTp = needsFast;
     } finally {
       _pnlPollBusy = false;
+      // Schedule next poll dynamically based on state
+      const nextDelayMs = _lastPnlPollHadDangerOrTp ? pollFastMs : pollNormalMs;
+      schedulePoll(nextDelayMs);
     }
-  }, 30_000);
+  }
+  // Kick off the recursive poller
+  schedulePoll(pollNormalMs);
 
   _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog];
-  // Store interval ref so stopCronJobs can clear it
-  _cronTasks._pnlPollInterval = pnlPollInterval;
-  log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
+  // Store timeout ref so stopCronJobs can clear it
+  _cronTasks._pnlPollInterval = { clear: () => { if (_pnlPollTimeoutId) clearTimeout(_pnlPollTimeoutId); } };
+  log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m, PnL poll ${pollNormalMs/1000}s (fast ${pollFastMs/1000}s when TP/danger active)`);
 }
 
 // ═══════════════════════════════════════════
@@ -1576,19 +1619,41 @@ async function telegramHandler(msg) {
     return;
   }
 
-  const closeMatch = text.match(/^\/close\s+(\d+)$/i);
+  // /close <n> [reason text...]  — reason optional, free-form
+  // Examples:
+  //   /close 1
+  //   /close 1 trend looks weak
+  //   /close 2 reason: capitulation reached
+  //   /close 1 — exit on rsi flip
+  const closeMatch = text.match(/^\/close\s+(\d+)(?:\s+(?:reason[:\s]*|—\s*|-\s*)?(.+))?$/i);
   if (closeMatch) {
     try {
       const idx = parseInt(closeMatch[1]) - 1;
+      const userReason = closeMatch[2]?.trim() || null;
       const { positions } = await getMyPositions({ force: true });
       if (idx < 0 || idx >= positions.length) { await sendMessage("Invalid number. Use /positions first."); return; }
       const pos = positions[idx];
-      await sendMessage(`Closing ${pos.pair}...`);
-      const result = await closePosition({ position_address: pos.position });
+      const reasonNote = userReason ? ` — "${userReason}"` : "";
+      await sendMessage(`Closing ${pos.pair}${reasonNote}...`);
+      const result = await closePosition({ position_address: pos.position, reason: userReason || "Manual close via Telegram /close" });
       if (result.success) {
-        const closeTxs = result.close_txs?.length ? result.close_txs : result.txs;
-        const claimNote = result.claim_txs?.length ? `\nClaim txs: ${result.claim_txs.join(", ")}` : "";
-        await sendMessage(`✅ Closed ${pos.pair}\nPnL: ${config.management.solMode ? "◎" : "$"}${result.pnl_usd ?? "?"} | close txs: ${closeTxs?.join(", ") || "n/a"}${claimNote}`);
+        // Build close reason: prefer user-provided reason, otherwise fallback to default manual label
+        const closeReason = userReason
+          ? `Manual close: ${userReason}`
+          : "Manual close via Telegram /close";
+        // Use same notifyClose format as auto-exit (gas + net PnL displayed)
+        await notifyClose({
+          pair: result.pool_name || pos.pair || pos.position?.slice(0, 8),
+          pnlUsd: result.pnl_usd ?? 0,
+          pnlPct: result.pnl_pct ?? 0,
+          feesUsd: result.fees_earned_usd ?? 0,
+          amountSol: result.amount_sol ?? 0,
+          strategy: result.strategy ?? "",
+          holdMinutes: result.hold_minutes ?? 0,
+          closeReason,
+          rangeEfficiency: result.range_efficiency ?? null,
+          gasSol: result.estimated_gas_sol ?? 0,
+        }).catch(() => {});
       } else {
         await sendMessage(`❌ Close failed: ${JSON.stringify(result)}`);
       }
