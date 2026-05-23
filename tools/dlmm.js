@@ -419,11 +419,14 @@ export async function getPositionPnl({ pool_address, position_address }) {
       ? parseFloat(p.pnlSolPctChange ?? p.pnlPctChange ?? 0)
       : parseFloat(p.pnlPctChange ?? 0);
 
-    // Estimated gas cost to close: claim+close (2 tx) + optional swap (1 tx if autoSwap).
-    // On-chain verified avg ~0.0008 SOL per Meteora DLMM tx via Helius pump endpoint.
-    // Conservative — final actual cost may be ±30% depending on network priority demand.
+    // Estimated gas cost to close: claim+close (2 tx) + optional swap (1 tx if autoSwap) + slippage buffer.
+    // Updated 2026-05-23: real cost ~0.0015 SOL/tx via Helius pump endpoint (Meteora DLMM ix uses 400-500k CU)
+    // Plus ~0.0008 SOL swap slippage buffer when autoSwap=true (Jupiter routing on small amounts).
+    // Reality check vs wallet delta showed prior 0.0008/tx under-estimated by ~50%.
     const txCount = config.management.autoSwapAfterClaim ? 3 : 2;
-    const estimatedGasSol = 0.0008 * txCount;
+    const perTxGas = 0.0015;
+    const swapSlippage = config.management.autoSwapAfterClaim ? 0.0008 : 0;
+    const estimatedGasSol = (perTxGas * txCount) + swapSlippage;
     const deployAmt = config.management.deployAmountSol ?? 0.5;
     const gasCostPct = (estimatedGasSol / deployAmt) * 100;
     const netPnlPctAfterGas = Math.round((pnlPct - gasCostPct) * 100) / 100;
@@ -1051,10 +1054,13 @@ export async function closePosition({ position_address, reason }) {
         }
       }
 
-      // Estimated gas: 0.0008 SOL per tx × actual tx count (claim + close + future swap if autoSwap)
+      // Estimated gas: 0.0015 SOL per tx × actual tx count + 0.0008 swap slippage if autoSwap
+      // Calibrated 2026-05-23 vs wallet delta (was 0.0008/tx — under-estimated by ~50%)
       const claimAndCloseTxs = (claimTxHashes?.length || 0) + (closeTxHashes?.length || 0);
       const swapTxEstimate = config.management.autoSwapAfterClaim ? 1 : 0;
-      const estimatedGasSol = Math.round((claimAndCloseTxs + swapTxEstimate) * 0.0008 * 10000) / 10000;
+      const perTxGas = 0.0015;
+      const swapSlippage = config.management.autoSwapAfterClaim ? 0.0008 : 0;
+      const estimatedGasSol = Math.round(((claimAndCloseTxs + swapTxEstimate) * perTxGas + swapSlippage) * 10000) / 10000;
 
       return {
         success: true,
