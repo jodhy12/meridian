@@ -246,7 +246,10 @@ function aggregateCandles(bars, n) {
 
 // ─── In-memory OHLCV cache (5 min TTL) ─────────────────────────
 const _ohlcvCache = new Map();
-const OHLCV_CACHE_TTL = 5 * 60 * 1000;
+// Cache TTL extended 2026-05-23 from 5min to 12min to reduce GeckoTerminal 429 rate limits.
+// At 15min screening interval, 12min cache means same-pool refetch only when cache expires
+// between cycles. Reduces API calls ~50% when pools repeat across cycles (typical trending).
+const OHLCV_CACHE_TTL = 12 * 60 * 1000;
 
 // Global rate-limit cooldown — when 429 hit, skip subsequent calls until cooldown expires
 // Avoids wasting 30+ seconds per pool on retries during severe rate limiting

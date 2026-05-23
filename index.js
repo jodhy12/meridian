@@ -927,8 +927,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
       }
 
       // 2f. Technical signals (entry ok? bearish? volume spike?)
-      // Delay to avoid GeckoTerminal 429 — sequential calls, 2.5s apart
-      await new Promise(r => setTimeout(r, 2500));
+      // Delay to avoid GeckoTerminal 429 — sequential calls, 3.5s apart (raised from 2.5 → safer for free tier)
+      await new Promise(r => setTimeout(r, 3500));
       let tech = null;
       let techFetchOk = false;
       try {
@@ -944,7 +944,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       let tech1h = null;
       let tech1hFetchOk = false;
       try {
-        await new Promise(r => setTimeout(r, 1500)); // delay between OHLCV calls
+        await new Promise(r => setTimeout(r, 2500)); // delay between OHLCV calls (raised 2026-05-23 to avoid 429)
         const raw1h = await getTechnicalSignals({ pool_address: pool.pool, timeframe: "1h" });
         if (!raw1h?.error) {
           tech1h = raw1h;
