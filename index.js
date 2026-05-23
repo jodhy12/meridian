@@ -655,17 +655,29 @@ export async function runManagementCycle({ silent = false } = {}) {
         const exitSignal = tech?.exit_signal ?? false;
         const volSpike = tech?.indicators?.volume_spike?.is_spike ?? false;
         const feeDying = (p.fee_per_tvl_24h ?? 999) < config.management.minFeePerTvl24h;
-        const shouldClose = exitSignal || (feeDying && !volSpike);
+        // Forward-looking momentum flip detection — added 2026-05-23
+        // Only at PnL >= 5% (position has run substantial, peak detection matters more)
+        // Trigger: RSI peaked high (>=65) AND just dropped sharply (>=10 points in last candle) = momentum turning over
+        // Catches LADA-style fade (peak 9% → trail close 6%) by exiting BEFORE full reversal
+        const rsi2 = tech?.indicators?.rsi2 ?? null;
+        const rsi2Trend = tech?.indicators?.rsi2_trend ?? null;
+        const momentumFlipping = p.pnl_pct >= 5
+                              && rsi2 !== null && rsi2Trend !== null
+                              && rsi2 >= 65
+                              && rsi2Trend <= -10;
+        const shouldClose = exitSignal || (feeDying && !volSpike) || momentumFlipping;
         setLastTpCheckPct(p.position, floor);
         if (shouldClose) {
           const reason = exitSignal
             ? `TP exit: ${tech.exit_reason} at ${p.pnl_pct.toFixed(2)}%`
+            : momentumFlipping
+            ? `TP exit: momentum flipping (RSI ${rsi2.toFixed(1)} dropped Δ${rsi2Trend.toFixed(1)}) at ${p.pnl_pct.toFixed(2)}%`
             : `TP exit: fees dying (fee/tvl=${p.fee_per_tvl_24h}) at ${p.pnl_pct.toFixed(2)}%`;
           actionMap.set(p.position, { action: "CLOSE", rule: 2, reason });
           log("cron", `[TP Analysis] ${p.pair}: CLOSE — ${reason}`);
         } else {
           actionMap.set(p.position, { action: "STAY" });
-          log("cron", `[TP Analysis] ${p.pair}: HOLD at ${p.pnl_pct.toFixed(2)}% (fees healthy, no exit signal) — next check at ${floor + 1}%`);
+          log("cron", `[TP Analysis] ${p.pair}: HOLD at ${p.pnl_pct.toFixed(2)}% (fees healthy, no exit signal, momentum stable) — next check at ${floor + 1}%`);
         }
       } catch (e) {
         log("cron_warn", `[TP Analysis] Failed for ${p.pair}: ${e.message} — fallback to hard TP`);
