@@ -941,19 +941,40 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
       // 2d-bonus. Multi-TF supertrend confirmation (1h)
       // Hard-skip if 15m AND 1h both bearish — strong macro downtrend signal
+      // Skip 1h fetch (2026-05-23) if 15m already shows clear filter conditions — saves GT API quota
       let tech1h = null;
       let tech1hFetchOk = false;
-      try {
-        await new Promise(r => setTimeout(r, 2500)); // delay between OHLCV calls (raised 2026-05-23 to avoid 429)
-        const raw1h = await getTechnicalSignals({ pool_address: pool.pool, timeframe: "1h" });
-        if (!raw1h?.error) {
-          tech1h = raw1h;
-          tech1hFetchOk = true;
+      const skip1hReason = (() => {
+        if (!techFetchOk) return null;  // 15m failed, still need 1h to verify
+        const t = tech;
+        const rsi = t?.indicators?.rsi2;
+        const vwap = t?.indicators?.vwap?.distance_pct;
+        const st15m = t?.indicators?.supertrend?.is_bullish;
+        // 15m already strongly bullish → 1h confirmation low value
+        if (st15m === true && rsi != null && rsi >= 25 && rsi <= 65 && vwap != null && vwap >= -15 && vwap <= 5) {
+          return "15m already shows Pattern A entry (RSI/VWAP/ST aligned)";
         }
-      } catch { /**/ }
+        // 15m extreme bad signals → 1h check pointless (will be skipped anyway)
+        if (vwap != null && (vwap > 5 || vwap < -25)) return "15m VWAP already extreme";
+        if (rsi != null && rsi > 70) return "15m RSI already overbought";
+        return null;
+      })();
+      if (skip1hReason) {
+        log("screening", `${pool.name} — skip 1h fetch: ${skip1hReason}`);
+      } else {
+        try {
+          await new Promise(r => setTimeout(r, 2500)); // delay between OHLCV calls
+          const raw1h = await getTechnicalSignals({ pool_address: pool.pool, timeframe: "1h" });
+          if (!raw1h?.error) {
+            tech1h = raw1h;
+            tech1hFetchOk = true;
+          }
+        } catch { /**/ }
+      }
 
       // Fail-closed: skip pool if BOTH timeframes failed (can't verify trend at all)
       // Single-TF failure is acceptable — at least one direction confirmed
+      // Note: skip1hReason path means we intentionally skipped 1h — only fail if 15m also failed
       if (!techFetchOk && !tech1hFetchOk) {
         log("screening", `Filtered ${pool.name} — multi-TF tech check unavailable (OHLCV fetch failed 15m+1h, likely 429 rate limit). Cannot verify trend, skipping for safety.`);
         continue;
