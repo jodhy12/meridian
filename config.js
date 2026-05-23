@@ -130,7 +130,7 @@ export const config = {
     recoveryGracePeakPct:  u.recoveryGracePeakPct  ?? 0.5,
     maxHoldFlatPeakPct:    u.maxHoldFlatPeakPct    ?? 0.5,
     flatExitPeakSkipPct:   u.flatExitPeakSkipPct   ?? 0.5,
-    flatExitMinAgeMin:     u.flatExitMinAgeMin     ?? 120,
+    flatExitMinAgeMin:     u.flatExitMinAgeMin     ?? 60,    // lowered 2026-05-22 from 120 — capital throughput +50% on dead deploys
     flatExitMaxFeeYieldPct: u.flatExitMaxFeeYieldPct ?? 0.3,
     flatExitPnlBandPct:    u.flatExitPnlBandPct    ?? 1.0,
 
@@ -141,6 +141,19 @@ export const config = {
     earlyDeadMinAge:         u.earlyDeadMinAge         ?? 25,    // start checking at age 25m
     earlyDeadMaxAge:         u.earlyDeadMaxAge         ?? 45,    // stop checking at 45m (rule 7 takes over)
     earlyDeadFeeRatePerMin:  u.earlyDeadFeeRatePerMin  ?? 0.00005, // SOL/min — below this = dead trajectory
+
+    // ─── Pump trap multi-TF threshold (2026-05-23) ───
+    // 4h fee_tvl / current_tf fee_tvl ratio threshold — higher = looser filter (allows more candidates)
+    pumpTrapMultiTfRatio:    u.pumpTrapMultiTfRatio    ?? 8,    // raised from 5 (May 22: 33% blocks in 5-8x borderline range)
+
+    // ─── Best Moment filter (2026-05-23) — Pattern A/B entry detection ───
+    // Data-derived from 7-winner analysis: RSI<15 + no_spike + fresh/small mcap = falling knife (loses)
+    // Established tokens (age>=72h + mcap>=$1M) can survive extreme oversold without spike
+    bestMomentEnabled:               u.bestMomentEnabled               ?? true,
+    extremeOversoldRsiThreshold:     u.extremeOversoldRsiThreshold     ?? 15,        // RSI2 below this = extreme oversold
+    extremeOversoldRequiresSpike:    u.extremeOversoldRequiresSpike    ?? true,      // require volume_spike if extreme oversold
+    extremeOversoldExemptAgeHours:   u.extremeOversoldExemptAgeHours   ?? 72,        // age >= this allows skip-spike exemption
+    extremeOversoldExemptMcap:       u.extremeOversoldExemptMcap       ?? 1000000,  // mcap >= this allows skip-spike exemption
 
     // ─── Rule 8 (max hold negative) refined thresholds ───
     maxHoldNegativePnlPct:      u.maxHoldNegativePnlPct      ?? -1.5,
@@ -278,5 +291,12 @@ export function reloadScreeningThresholds() {
     if (fresh.maxVolatility     != null) s.maxVolatility     = fresh.maxVolatility;
     if (fresh.minSwapCount     != null) s.minSwapCount     = fresh.minSwapCount;
     if (fresh.minUniqueTraders != null) s.minUniqueTraders = fresh.minUniqueTraders;
+    // Best Moment filter keys
+    if (fresh.bestMomentEnabled !== undefined) s.bestMomentEnabled = fresh.bestMomentEnabled;
+    if (fresh.extremeOversoldRsiThreshold != null) s.extremeOversoldRsiThreshold = fresh.extremeOversoldRsiThreshold;
+    if (fresh.extremeOversoldRequiresSpike !== undefined) s.extremeOversoldRequiresSpike = fresh.extremeOversoldRequiresSpike;
+    if (fresh.extremeOversoldExemptAgeHours != null) s.extremeOversoldExemptAgeHours = fresh.extremeOversoldExemptAgeHours;
+    if (fresh.extremeOversoldExemptMcap != null) s.extremeOversoldExemptMcap = fresh.extremeOversoldExemptMcap;
+    if (fresh.pumpTrapMultiTfRatio != null) s.pumpTrapMultiTfRatio = fresh.pumpTrapMultiTfRatio;
   } catch { /* ignore */ }
 }

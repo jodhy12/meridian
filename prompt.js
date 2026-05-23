@@ -154,15 +154,30 @@ All candidates are pre-scored and pre-enriched. Pick the highest-score candidate
 
 STRATEGY: bid_ask single-sided SOL (post-dip-then-recover LP thesis). Bearish supertrend + price below VWAP = ENTRY OPPORTUNITY, not a skip signal. Skip only on pump entries (VWAP > +5%, RSI2 > 70) or extreme dips with no support (VWAP < -25%, falling knife). The deploy goal text contains the full thesis — read it.
 
-GOLDEN ENTRY PATTERN (data-derived from 31 post-fix closes, updated 2026-05-22):
-- RSI2: PREFER 50+ (3/7=43% win, avg +2.27%) OR 20-30 (1/4=25% win, avg +1.43%). AVOID RSI2 <20 (3/13=23% win, avg only +0.14% — falling knife trap).
-- VWAP_dist: SWEET SPOT -15% to -5% (5/13=38% win, avg +1.41% — post-dip recovery). AVOID <-25% (0/2 wins) and >+5% (0/1 win, pump trap).
-- volume_spike=true: 2x win rate (2/5=40% vs 5/26=19% baseline) — strong positive signal.
-- token_age_hours: WINNERS avg 2032h (~84 days), LOSERS avg 46h (~2 days). PREFER established tokens (>72h).
-- bot_holders_pct: WINNERS avg 13.8%, LOSERS avg 22.9%. PREFER pools with bot_pct < 18%.
-- bin_step: PREFER 80 (37.5% WR) over 100 (19%) or 125 (0%).
-- score: WINNERS avg 75, LOSERS avg 57. Strong signal — trust the pre-computed score.
-- mcap: WINNERS avg $1.34M, LOSERS avg $720k. Bigger mcap = more stable.
+BEST MOMENT TRIGGERS (data-derived from 7-winner analysis, updated 2026-05-23):
+
+Pattern A — RECOVERY CONFIRMED (preferred, 4/7 winners avg +4-6%):
+  rsi2 25-65 + rsi2_trend > 0 (climbing) + vwap_dist -15 to +5% + supertrend up
+  = "bounce in progress, first green after red"
+
+Pattern B — CAPITULATION + VOLUME SPIKE (3/7 winners avg +2-4%):
+  rsi2 < 15 + volume_spike=TRUE + vwap_dist -15 to -22%
+  = "exhaustion bottom, buyer step-in confirmed"
+  WITHOUT volume_spike → SKIP (3/3 losers had RSI<20 + no spike = falling knife)
+
+BONUS signals (additive):
+- bin_step=80 preferred (37.5% WR vs 19% for bs=100)
+- token_age_hours > 72 (winners avg 84d, losers avg 2d)
+- bot_holders_pct < 18 (winners 13.8% vs losers 22.9%)
+- mcap > $1M (more stable swap volume)
+
+AVOID:
+- vwap_dist > +5% (pump trap)
+- rsi2 > 70 (overbought)
+- vwap_dist < -25% (falling knife)
+- rsi2 < 15 + no volume_spike (pure falling knife)
+- rsi2 15-25 + rsi2_trend < 0 (still falling, bounce not started)
+- rsi2 30-50 + no other strong signal (weak neutral zone, 0/7 wins)
 
 HARD RULES:
 - get_top_candidates returns 0 pools → output "⛔ NO DEPLOY — no candidates available" as final answer immediately. DO NOT call search_pools, get_token_info, check_smart_wallets_on_pool, or any other discovery tool to chase alternatives.

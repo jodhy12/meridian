@@ -329,6 +329,17 @@ export async function getTechnicalSignals({ pool_address, timeframe = "15m" }) {
 
   // ── Compute all indicators ─────────────────────────────────
   const rsiVal    = rsi(closes, 2);
+  // RSI2 trend — diff vs previous candle (positive = climbing = bounce starting)
+  // Added 2026-05-23: distinguishes "bounce in progress" from "falling knife"
+  // Winners pattern: RSI2_trend > +5 (climbing from oversold) → high WR
+  // Losers pattern: RSI2_trend ≤ 0 with RSI2 <20 → falling knife continues
+  let rsi2Trend = null;
+  if (closes.length >= 3) {
+    const rsiPrev = rsi(closes.slice(0, -1), 2);
+    if (rsiVal !== null && rsiPrev !== null) {
+      rsi2Trend = Math.round((rsiVal - rsiPrev) * 100) / 100;
+    }
+  }
   const bb        = bollingerBands(closes, 20, 2);
   const macdVal   = macd(closes, 12, 26, 9);
   const atrVal    = atr(bars, 14);
@@ -369,7 +380,8 @@ export async function getTechnicalSignals({ pool_address, timeframe = "15m" }) {
     `${pool_address} [${timeframe}] ` +
     `bars=${bars.length} (${firstBucket}→${lastBucket} UTC) ` +
     `close=${closeStr} BBu=${bbUpperStr} ` +
-    `RSI2=${rsiVal} VWAPd=${vwapVal?.distance_pct}% ` +
+    `RSI2=${rsiVal}${rsi2Trend != null ? ` (Δ${rsi2Trend>=0?'+':''}${rsi2Trend})` : ''} ` +
+    `VWAPd=${vwapVal?.distance_pct}% ` +
     `volSpike=${volSpike?.is_spike} ST=${stVal?.direction} ` +
     `→ exit=${exitSignal}${exitReason ? ` (${exitReason})` : ""}`
   );
@@ -393,6 +405,7 @@ export async function getTechnicalSignals({ pool_address, timeframe = "15m" }) {
     current_close: currentClose,
     indicators: {
       rsi2:            rsiVal,
+      rsi2_trend:      rsi2Trend,   // delta vs previous candle (positive=climbing, negative=falling)
       bollinger_bands: bb,
       macd:            macdVal,
       atr:             atrVal,

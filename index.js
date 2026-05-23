@@ -898,13 +898,15 @@ export async function runScreeningCycle({ silent = false } = {}) {
       // 2e-bonus. Multi-TF Fee/TVL pump trap detection
       // Pump pattern: fee_tvl(4h) >> fee_tvl(current TF) = sustained pump dropping = post-pump phase
       // Healthy: ratios consistent across TFs
+      // Threshold raised 2026-05-23 from 5× to 8× — May 22 log showed 33% of blocks (128 of 388) were
+      // in borderline 5-8× range, blocking pools like Bank-SOL repeatedly. 8× still catches strong pump traps.
       try {
         const pool4h = await getPoolDetail({ pool_address: pool.pool, timeframe: "4h" });
         const fee4h = Number(pool4h?.fee_active_tvl_ratio || 0);
         const feeNow = Number(pool.fee_active_tvl_ratio || 0);
-        // Threshold: 4h > 5× current = recent activity dropped sharply vs longer window (post-pump distribution)
-        if (fee4h > 0 && feeNow > 0 && fee4h / feeNow > 5) {
-          log("screening", `Filtered ${pool.name} — pump trap multi-TF: fee_tvl 4h=${fee4h.toFixed(2)} >> current=${feeNow.toFixed(2)} (ratio ${(fee4h/feeNow).toFixed(1)}× — post-pump)`);
+        const pumpTrapRatio = config.screening.pumpTrapMultiTfRatio ?? 8;
+        if (fee4h > 0 && feeNow > 0 && fee4h / feeNow > pumpTrapRatio) {
+          log("screening", `Filtered ${pool.name} — pump trap multi-TF: fee_tvl 4h=${fee4h.toFixed(2)} >> current=${feeNow.toFixed(2)} (ratio ${(fee4h/feeNow).toFixed(1)}× > ${pumpTrapRatio}× — post-pump)`);
           continue;
         }
         pool._fee_tvl_4h = fee4h;
@@ -989,9 +991,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
       }
 
       // bid_ask anti-pump entry filter — thesis = buy-dip-recover, so reject pump entry
-      // Tightened 2026-05-22 from VWAP+8/RSI75 to align with golden-pattern data:
-      // VWAP+5% (pump trap, 0/1 wins in zone), RSI2>70 (overbought zone — winners cluster 50-65)
       const rsi2 = tech?.indicators?.rsi2 ?? null;
+      const rsi2Trend = tech?.indicators?.rsi2_trend ?? null;
+      const volSpikeNow = tech?.indicators?.volume_spike?.is_spike ?? false;
       if (vwapDist > 5) {
         log("screening", `Filtered ${pool.name} — price +${vwapDist.toFixed(1)}% above VWAP, pump entry not aligned with bid_ask thesis`);
         continue;
@@ -1000,11 +1002,37 @@ export async function runScreeningCycle({ silent = false } = {}) {
         log("screening", `Filtered ${pool.name} — RSI2=${rsi2.toFixed(1)} overbought, wait for cooldown before bid_ask entry`);
         continue;
       }
-      // Falling knife guard — price too deep below VWAP = no support, dip may continue past range
-      // Tightened 2026-05-22 from -35 to -25 to match golden-pattern data (0/2 wins in VWAP<-25 zone)
+      // Falling knife guard — too deep below VWAP = no support, dip may continue past range
       if (vwapDist < -25) {
         log("screening", `Filtered ${pool.name} — price ${vwapDist.toFixed(1)}% below VWAP, falling knife — wait for first bounce`);
         continue;
+      }
+      // Best Moment filter — added 2026-05-23 from 7-winner pattern analysis (backtest validated)
+      // Winners cluster in 2 setups:
+      //   Pattern A: RSI2 25-65 + climbing (bounce confirmed) → +4-6% avg PnL
+      //   Pattern B: RSI2 < threshold + volume_spike (capitulation + buyer step-in) → +2-4% avg
+      //   Pattern B-alt: RSI2 < threshold + established token (age>=X AND mcap>=Y) → can still win
+      // Losers: RSI2 < threshold + no volume_spike + fresh/small mcap → "falling knife continues"
+      // Backtest: kept 7/7 winners, cut 2/3 losers (DEGEN -3.72%, Embrace -2.48%)
+      // Configurable via user-config.json: bestMomentEnabled, extremeOversoldRsiThreshold, extremeOversoldExempt*
+      if (config.screening.bestMomentEnabled !== false) {
+        const oversoldRsi = config.screening.extremeOversoldRsiThreshold ?? 15;
+        const requiresSpike = config.screening.extremeOversoldRequiresSpike ?? true;
+        const exemptAge = config.screening.extremeOversoldExemptAgeHours ?? 72;
+        const exemptMcap = config.screening.extremeOversoldExemptMcap ?? 1000000;
+        if (rsi2 !== null && rsi2 < oversoldRsi && requiresSpike && !volSpikeNow) {
+          const tokenAge = pool.token_age_hours ?? 0;
+          const tokenMcap = pool.mcap ?? 0;
+          const established = tokenAge >= exemptAge && tokenMcap >= exemptMcap;
+          if (!established) {
+            log("screening", `Filtered ${pool.name} — RSI2=${rsi2.toFixed(1)} < ${oversoldRsi} + no volume_spike + not established (age=${tokenAge}h, mcap=$${(tokenMcap/1e6).toFixed(2)}M) — pure falling knife pattern`);
+            continue;
+          }
+        }
+      }
+      // Bonus warning (not skip) — RSI 15-25 with negative trend = still falling
+      if (rsi2 !== null && rsi2 >= 15 && rsi2 < 25 && rsi2Trend !== null && rsi2Trend < 0 && !volSpikeNow) {
+        log("screening", `Warning: ${pool.name} — RSI2=${rsi2.toFixed(1)} still falling (Δ${rsi2Trend.toFixed(1)}), no bounce signal yet. Score-only.`);
       }
 
       if (pool._exit_signal) {
@@ -1182,24 +1210,38 @@ Our profit comes from: dip happens → our SOL converts to token at cheap basis 
 THIS MEANS bearish supertrend + price below VWAP + RSI2 in recovery zone = OPPORTUNITY, not danger.
 The "scary" entries that directional traders avoid (post-dip, bearish trend) are EXACTLY where bid_ask LP wins.
 
-GOOD ENTRY (deploy) — derived from 31 post-fix closes:
-- VWAP_dist between -15% and -5% (post-dip recovery — 38% WR, avg +1.41%)
-- RSI2 between 50 and 65 (mid-high, indicates recovery starting — 43% WR, avg +2.27%)
-- OR RSI2 between 20 and 30 (cooling but not extreme — 25% WR, avg +1.43%)
-- Supertrend bearish on 15m is FINE — we want the dip
-- Bonus: 1h supertrend up while 15m bearish = pullback in uptrend (best case)
-- BONUS: volume_spike=true at entry (2x win rate — 40% vs 19% baseline)
-- BONUS: bin_step=80 (37.5% WR vs 19% for bin_step 100)
+BEST MOMENT TRIGGERS (derived from 7-winner pattern, updated 2026-05-23):
+
+🅰️ PATTERN A — "Recovery Confirmed" (PREFERRED, 4/7 winners):
+- RSI2 between 25-65 (bounced from oversold, momentum returning)
+- rsi2_trend > 0 (RSI climbing vs previous candle — bounce in progress)
+- VWAP_dist -15% to +5% (post-dip recovering toward mean)
+- Supertrend up OR just flipped up
+- "First green candle after red sequence" pattern
+- Avg PnL: +4-6%
+
+🅱️ PATTERN B — "Capitulation + Volume Spike" (3/7 winners):
+- RSI2 < 15 (extreme bottom)
+- volume_spike = TRUE (buyer step-in confirmed)
+- VWAP_dist -15% to -22% (deep dip)
+- "Exhaustion bottom" signal
+- Avg PnL: +2-4% (smaller wins)
+- WITHOUT volume_spike = SKIP (3/3 losers had RSI<20 + no spike)
+
+GOOD ENTRY:
+- Matches Pattern A or Pattern B
+- BONUS signals: bin_step=80 (37.5% WR vs 19%), token_age>72h, bot_pct<18%, mcap>1M
 
 BAD ENTRY (skip):
-- VWAP_dist > +5% → pump entry, will reverse against us
-- RSI2 > 70 → overbought, wait for cooldown
-- VWAP_dist < -25% → falling knife, no support (0/2 wins in this zone)
-- RSI2 < 20 → extreme oversold trap (3/13 wins, mostly flat +0.14% avg — bait zone)
+- VWAP_dist > +5% → pump entry, will reverse
+- RSI2 > 70 → overbought
+- VWAP_dist < -25% → falling knife (0/2 wins)
+- RSI2 < 15 WITHOUT volume_spike → pure falling knife (no buyer step-in yet)
+- RSI2 15-25 with rsi2_trend < 0 (still falling) → bounce not started
 - RSI2 30-50 → neutral zone, weak signal (0/7 wins, avg +0.15%)
 - exit_signal_active → momentum already exhausted
-- token_age_hours < 48 → fresh tokens lose 2x more (winners avg 84 days, losers avg 2 days)
-- bot_holders_pct > 20 → bot-heavy pools underperform (losers avg 22.9% vs winners 13.8%)
+- token_age_hours < 48 → fresh tokens lose 2x more (rug risk)
+- bot_holders_pct > 20 → bot-heavy pools underperform
 
 DEPLOY RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

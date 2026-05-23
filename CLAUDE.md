@@ -117,6 +117,40 @@ Sets defined in `agent.js:6-7`. If you add a tool, also add it to the relevant s
 
 ---
 
+## Best Moment Triggers (2026-05-23, derived from 7-winner analysis)
+
+Bid_ask post-dip recover thesis works best on two entry patterns:
+
+**Pattern A — Recovery Confirmed** (4/7 winners, +4-6% avg):
+- `rsi2` between 25-65 + `rsi2_trend > 0` (climbing from oversold)
+- `vwap_dist` -15% to +5%
+- Supertrend up or just-flipped up
+- "First green candle after red sequence" pattern
+
+**Pattern B — Capitulation + Volume Spike** (3/7 winners, +2-4% avg):
+- `rsi2 < 15` (extreme bottom)
+- `volume_spike = true` (buyer step-in confirmed)
+- `vwap_dist` -15% to -22%
+
+**Pattern B-alt — Established Token Bottoming**:
+- `rsi2 < 15` + no spike, but `token_age >= 72h` AND `mcap >= $1M`
+- Established tokens can bottom without spike confirmation
+
+**HARD SKIP (falling knife)**:
+- `rsi2 < 15` + no `volume_spike` + (age < 72h OR mcap < $1M)
+- `vwap_dist > +5%` (pump trap)
+- `rsi2 > 70` (overbought)
+- `vwap_dist < -25%` (no support)
+
+## Rule 7b — Early Dead Detection (added 2026-05-22)
+
+In management cycle, after position age 25-45m:
+- If `fee_rate < 0.00005 SOL/min` AND no peak >0.5% AND in_range → CLOSE
+- Reason: "Early dead detect" → cooldown 12h critical class
+- Backtest: 0 false positives on 31 closes, saves 60-90m capital per dead deploy
+
+---
+
 ## Screener Safety Checks (executor.js)
 
 Before `deploy_position` executes:
@@ -131,19 +165,19 @@ Before `deploy_position` executes:
 
 ---
 
-## bins_below Calculation (SCREENER)
+## bins_below / bins_above Calculation (SCREENER)
 
-Linear formula based on pool volatility — narrow range matched to aggressive stop loss:
+ATR-based formula in [tools/ohlcv.js](tools/ohlcv.js) — tightened 2026-05-22 from `[15,30]` to `[10,18]` for more concentrated liquidity. Asymmetric mirror in [index.js](index.js) — `bins_above = bins_below × 1.5` for OOR-up pump protection.
 
 ```
-bins_below = round(15 + (volatility / 5) * 15), clamped to [15, 30]
+bins_below = round(10 + (atrPct / 10) * 8), clamped to [10, 18]
+bins_above = round(bins_below * 1.5)
 ```
 
-- Low volatility (0) → 15 bins (~12% range with bin_step 80)
-- High volatility (5+) → 30 bins (~24% range with bin_step 80)
-- Continuous, not tiered
-- Concentrated liquidity strategy: higher fee per swap, OOR exits faster
-- Matched to stopLossPct: -7% so exits happen before liquidity wasted in deep bins
+- Low ATR (2%): bins_below 12, bins_above 18 — ~24-36% total range with bin_step 100
+- High ATR (10%+): bins_below 18, bins_above 27 — ~45% total range
+- Asymmetric: wider above active to ride pump without OOR-up, tighter below for fee concentration
+- Matched to stopLossPct -7% + maxILPct -7%
 
 ---
 
