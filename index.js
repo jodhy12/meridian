@@ -1566,6 +1566,7 @@ async function telegramHandler(msg) {
           ? `Manual close: ${userReason}`
           : "Manual close via Telegram /close";
         // Use same notifyClose format as auto-exit (gas + net PnL displayed)
+        // force: true → bypass liveMessage check (manual close should always notify)
         await notifyClose({
           pair: result.pool_name || pos.pair || pos.position?.slice(0, 8),
           pnlUsd: result.pnl_usd ?? 0,
@@ -1577,7 +1578,10 @@ async function telegramHandler(msg) {
           closeReason,
           rangeEfficiency: result.range_efficiency ?? null,
           gasSol: result.estimated_gas_sol ?? 0,
-        }).catch(() => {});
+          force: true,
+        }).catch((e) => {
+          log("telegram_warn", `notifyClose failed for manual /close: ${e.message}`);
+        });
       } else {
         await sendMessage(`❌ Close failed: ${JSON.stringify(result)}`);
       }

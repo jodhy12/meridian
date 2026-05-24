@@ -379,8 +379,10 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlPct, feesUsd = 0, amountSol = 0, strategy = "", holdMinutes = 0, closeReason = "", rangeEfficiency = null, gasSol = 0 }) {
-  if (hasActiveLiveMessage()) return;
+export async function notifyClose({ pair, pnlUsd, pnlPct, feesUsd = 0, amountSol = 0, strategy = "", holdMinutes = 0, closeReason = "", rangeEfficiency = null, gasSol = 0, force = false }) {
+  // Skip kalau ada live message active (avoid duplicate noise during cycles)
+  // UNLESS force=true (manual close via /close should always notify)
+  if (!force && hasActiveLiveMessage()) return;
   const D = "━━━━━━━━━━━━━━━━━━━━";
   const win = pnlUsd >= 0;
   const sign = win ? "+" : "";
