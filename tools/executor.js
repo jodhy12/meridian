@@ -474,7 +474,9 @@ export async function executeTool(name, args) {
           },
         });
       } else if (name === "close_position") {
-        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, feesUsd: result.fees_earned_usd ?? 0, amountSol: result.amount_sol ?? 0, strategy: result.strategy ?? "", holdMinutes: result.hold_minutes ?? 0, closeReason: args.reason ?? "", rangeEfficiency: result.range_efficiency ?? null, gasSol: result.estimated_gas_sol ?? 0, walletDeltaSol: result.wallet_delta_sol ?? null, execSlipPct: result.execution_slippage_pct ?? null }).catch(() => {});
+        // force=true so notification fires even during management cycle (live message active)
+        // Otherwise Wallet Δ + Slip data invisible for rule-based closes
+        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, feesUsd: result.fees_earned_usd ?? 0, amountSol: result.amount_sol ?? 0, strategy: result.strategy ?? "", holdMinutes: result.hold_minutes ?? 0, closeReason: args.reason ?? "", rangeEfficiency: result.range_efficiency ?? null, gasSol: result.estimated_gas_sol ?? 0, realizedPnlSol: result.realized_pnl_sol ?? null, execSlipPct: result.execution_slippage_pct ?? null, force: true }).catch(() => {});
         appendDecision({
           type: "close",
           actor: "MANAGER",

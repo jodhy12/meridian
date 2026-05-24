@@ -379,7 +379,7 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlPct, feesUsd = 0, amountSol = 0, strategy = "", holdMinutes = 0, closeReason = "", rangeEfficiency = null, gasSol = 0, force = false, walletDeltaSol = null, execSlipPct = null }) {
+export async function notifyClose({ pair, pnlUsd, pnlPct, feesUsd = 0, amountSol = 0, strategy = "", holdMinutes = 0, closeReason = "", rangeEfficiency = null, gasSol = 0, force = false, realizedPnlSol = null, execSlipPct = null }) {
   // Skip kalau ada live message active (avoid duplicate noise during cycles)
   // UNLESS force=true (manual close via /close should always notify)
   if (!force && hasActiveLiveMessage()) return;
@@ -413,12 +413,12 @@ export async function notifyClose({ pair, pnlUsd, pnlPct, feesUsd = 0, amountSol
     const netSign = netPnlUsd >= 0 ? "+" : "";
     lines.push(`⛽ Gas: ◎${gasSol.toFixed(4)}  ·  Net: <b>${netSign}◎${netPnlUsd.toFixed(4)}</b>`);
   }
-  // Real wallet delta + execution slippage (shows actual on-chain impact vs reported PnL)
-  if (walletDeltaSol != null) {
-    const wSign = walletDeltaSol >= 0 ? "+" : "";
+  // Real PnL after gas/slippage + execution slippage indicator
+  if (realizedPnlSol != null) {
+    const rSign = realizedPnlSol >= 0 ? "+" : "";
     const slipWarn = execSlipPct != null && execSlipPct < -3 ? " ⚠️" : (execSlipPct != null && execSlipPct < -1 ? " ⚡" : "");
     const slipStr = execSlipPct != null ? `  ·  Slip: ${execSlipPct >= 0 ? "+" : ""}${execSlipPct.toFixed(2)}%${slipWarn}` : "";
-    lines.push(`💼 Wallet Δ: <b>${wSign}◎${walletDeltaSol.toFixed(4)}</b>${slipStr}`);
+    lines.push(`💼 Real PnL: <b>${rSign}◎${realizedPnlSol.toFixed(4)}</b>${slipStr}`);
   }
   lines.push(`⏱ Held: ${holdStr}` + (amountSol > 0 ? `  ·  ${amountSol} SOL` : ""));
   if (strategy) lines.push(`📐 ${esc(strategy)}`);
