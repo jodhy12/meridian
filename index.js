@@ -1110,6 +1110,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
         // Activity (from Meteora API — best dead pool predictor)
         swap_count: pool.swap_count ?? null,
         unique_traders: pool.unique_traders ?? null,
+        volume_change_pct: pool.volume_change_pct ?? null,  // added 2026-05-24 — collect for Volume Trend analysis (per @dikibagast thesis)
+        fee_change_pct: pool.fee_change_pct ?? null,        // related signal — fee growth/decline rate
         // Scoring (for evolution tracking)
         score: pool.score ?? null,
         // Technical (already fetched above)
