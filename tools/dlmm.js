@@ -819,6 +819,12 @@ export async function closePosition({ position_address, reason }) {
   try {
     log("close", `Closing position: ${position_address}`);
     const wallet = getWallet();
+    // Capture wallet SOL balance BEFORE close — used to compute real execution slippage
+    let walletSolBefore = null;
+    try {
+      const balLamports = await getConnection().getBalance(wallet.publicKey);
+      walletSolBefore = balLamports / 1e9;
+    } catch { /* non-blocking */ }
     const poolAddress = await lookupPoolForPosition(position_address, wallet.publicKey.toString());
     // Clear cached pool so SDK loads fresh position fee state
     poolCache.delete(poolAddress.toString());
@@ -1055,12 +1061,31 @@ export async function closePosition({ position_address, reason }) {
       }
 
       // Estimated gas: 0.0015 SOL per tx × actual tx count + 0.0008 swap slippage if autoSwap
-      // Calibrated 2026-05-23 vs wallet delta (was 0.0008/tx — under-estimated by ~50%)
       const claimAndCloseTxs = (claimTxHashes?.length || 0) + (closeTxHashes?.length || 0);
       const swapTxEstimate = config.management.autoSwapAfterClaim ? 1 : 0;
       const perTxGas = 0.0015;
       const swapSlippage = config.management.autoSwapAfterClaim ? 0.0008 : 0;
       const estimatedGasSol = Math.round(((claimAndCloseTxs + swapTxEstimate) * perTxGas + swapSlippage) * 10000) / 10000;
+
+      // Capture wallet SOL balance AFTER close (allow 3s for swap to settle if autoSwap)
+      // Compute real execution slippage = (reported PnL) - (actual wallet delta)
+      let walletSolAfter = null;
+      let executionSlippagePct = null;
+      let walletDeltaSol = null;
+      try {
+        if (config.management.autoSwapAfterClaim) await new Promise(r => setTimeout(r, 3000));
+        const balLamportsAfter = await getConnection().getBalance(wallet.publicKey);
+        walletSolAfter = balLamportsAfter / 1e9;
+        if (walletSolBefore != null && walletSolAfter != null && tracked?.amount_sol) {
+          walletDeltaSol = Math.round((walletSolAfter - walletSolBefore) * 10000) / 10000;
+          // Slippage = reported PnL SOL vs actual wallet delta (negative = worse than reported)
+          const reportedPnlSol = (pnlPct / 100) * tracked.amount_sol;
+          executionSlippagePct = Math.round(((walletDeltaSol - reportedPnlSol) / tracked.amount_sol) * 10000) / 100;
+          log("close", `Wallet delta: ${walletDeltaSol.toFixed(4)} SOL (reported PnL ${reportedPnlSol.toFixed(4)}, exec slip ${executionSlippagePct.toFixed(2)}%)`);
+        }
+      } catch (e) {
+        log("close_warn", `Failed to capture post-close wallet balance: ${e.message}`);
+      }
 
       return {
         success: true,
@@ -1078,6 +1103,10 @@ export async function closePosition({ position_address, reason }) {
         hold_minutes: minutesHeld,
         base_mint: pool.lbPair.tokenXMint.toString(),
         estimated_gas_sol: estimatedGasSol,
+        wallet_sol_before: walletSolBefore,
+        wallet_sol_after: walletSolAfter,
+        wallet_delta_sol: walletDeltaSol,
+        execution_slippage_pct: executionSlippagePct,
       };
     }
 

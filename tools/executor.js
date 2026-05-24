@@ -474,7 +474,7 @@ export async function executeTool(name, args) {
           },
         });
       } else if (name === "close_position") {
-        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, feesUsd: result.fees_earned_usd ?? 0, amountSol: result.amount_sol ?? 0, strategy: result.strategy ?? "", holdMinutes: result.hold_minutes ?? 0, closeReason: args.reason ?? "", rangeEfficiency: result.range_efficiency ?? null, gasSol: result.estimated_gas_sol ?? 0 }).catch(() => {});
+        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, feesUsd: result.fees_earned_usd ?? 0, amountSol: result.amount_sol ?? 0, strategy: result.strategy ?? "", holdMinutes: result.hold_minutes ?? 0, closeReason: args.reason ?? "", rangeEfficiency: result.range_efficiency ?? null, gasSol: result.estimated_gas_sol ?? 0, walletDeltaSol: result.wallet_delta_sol ?? null, execSlipPct: result.execution_slippage_pct ?? null }).catch(() => {});
         appendDecision({
           type: "close",
           actor: "MANAGER",
@@ -819,6 +819,45 @@ async function runSafetyChecks(name, args) {
       // Only applies to discretionary closes — rule-based exits always allowed through.
       const reason = (args.reason || "").toLowerCase();
       const isRuleBased = /stop.?loss|oor|out.?of.?range|trailing|il.?stop|early.?il|instruction|stale|dead|technical|exit_signal/i.test(reason);
+
+      // Smart dump check — for trail-fast / IL-stop / early-IL exits, do quick tech read
+      // If recovery signals strong (RSI climbing + volume spike), DEFER close one cycle
+      // for potential V-shape bounce. Limited to 1 defer per position to prevent infinite hold.
+      // Added 2026-05-24 from Poor-SOL disaster analysis (-10% wallet vs -1.12% reported)
+      const isUrgentExit = /trailing tp \(fast\)|il stop|early il/i.test(reason);
+      const dumpCheckEnabled = config.management.smartDumpCheckEnabled !== false;
+      if (isUrgentExit && dumpCheckEnabled && args.position_address) {
+        try {
+          const tracked = getTrackedPosition(args.position_address);
+          const deferKey = `_dumpDefer_${args.position_address}`;
+          const alreadyDeferred = tracked?.[deferKey] === true;
+          if (tracked?.pool_address && !alreadyDeferred) {
+            // Race tech fetch against 2s timeout — don't risk waiting too long during dump
+            const tech = await Promise.race([
+              getTechnicalSignals({ pool_address: tracked.pool_address, timeframe: "15m" }),
+              new Promise((_, rej) => setTimeout(() => rej(new Error("tech-timeout")), 2500)),
+            ]).catch(() => null);
+            if (tech && !tech.error) {
+              const rsi = tech?.indicators?.rsi2 ?? null;
+              const rsiTrend = tech?.indicators?.rsi2_trend ?? null;
+              const volSpike = tech?.indicators?.volume_spike?.is_spike ?? false;
+              // Recovery signals: RSI bouncing back OR volume spike on recovery (buyer step-in)
+              const recoveryDetected =
+                (rsiTrend != null && rsiTrend >= 5) ||
+                (volSpike && rsi != null && rsi >= 15 && rsiTrend != null && rsiTrend > 0);
+              if (recoveryDetected) {
+                // Mark deferred so next trigger fires close (no infinite defer)
+                if (tracked) tracked[deferKey] = true;
+                return {
+                  pass: false,
+                  reason: `Smart dump defer: recovery signal detected (RSI=${rsi?.toFixed(1)}, Δ${rsiTrend?.toFixed(1)}, spike=${volSpike}). One-cycle defer for V-shape bounce. Next trigger will fire close.`,
+                };
+              }
+            }
+          }
+        } catch { /* best-effort — don't block urgent close on tech fetch error */ }
+      }
+
       if (!isRuleBased && args.position_address) {
         try {
           const tracked = getTrackedPosition(args.position_address);

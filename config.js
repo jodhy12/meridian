@@ -98,6 +98,9 @@ export const config = {
     maxTrailingDurationMin: u.maxTrailingDurationMin ?? 180, // max minutes trailing TP can run (data: BURNIE 393m -7.73%, BabyTrump 346m -1.43%)
     tpCheckIntervalMin:    u.tpCheckIntervalMin    ?? 1,    // management cycle interval when position is in TP/danger zone (faster than normal)
     dangerZonePct:         u.dangerZonePct         ?? 2,    // trigger fast polling when PnL drops below -X%
+    // Smart dump check (2026-05-24): defer urgent close 1 cycle if recovery signals strong
+    // Catches V-shape bounces, avoids worst-case slippage on continued dumps
+    smartDumpCheckEnabled: u.smartDumpCheckEnabled ?? true,
     tokenCooldownHours:    u.tokenCooldownHours    ?? 2,    // fallback if close-reason doesn't match any category
     cooldownCriticalHours: u.cooldownCriticalHours ?? 12,   // dead pool, repeated OOR — structural broken
     cooldownILHours:       u.cooldownILHours       ?? 1.5,  // IL stop / stop loss / Early IL — V-shape window

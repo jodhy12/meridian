@@ -1578,6 +1578,8 @@ async function telegramHandler(msg) {
           closeReason,
           rangeEfficiency: result.range_efficiency ?? null,
           gasSol: result.estimated_gas_sol ?? 0,
+          walletDeltaSol: result.wallet_delta_sol ?? null,
+          execSlipPct: result.execution_slippage_pct ?? null,
           force: true,
         }).catch((e) => {
           log("telegram_warn", `notifyClose failed for manual /close: ${e.message}`);
