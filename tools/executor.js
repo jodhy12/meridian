@@ -820,11 +820,11 @@ async function runSafetyChecks(name, args) {
       const reason = (args.reason || "").toLowerCase();
       const isRuleBased = /stop.?loss|oor|out.?of.?range|trailing|il.?stop|early.?il|instruction|stale|dead|technical|exit_signal/i.test(reason);
 
-      // Smart dump check — for trail-fast / IL-stop / early-IL exits, do quick tech read
+      // Smart dump check — for trail-fast / IL-stop / early-IL / stop-loss exits, do quick tech read
       // If recovery signals strong (RSI climbing + volume spike), DEFER close one cycle
       // for potential V-shape bounce. Limited to 1 defer per position to prevent infinite hold.
       // Added 2026-05-24 from Poor-SOL disaster analysis (-10% wallet vs -1.12% reported)
-      const isUrgentExit = /trailing tp \(fast\)|il stop|early il/i.test(reason);
+      const isUrgentExit = /trailing tp \(fast\)|il stop|early il|stop loss/i.test(reason);
       const dumpCheckEnabled = config.management.smartDumpCheckEnabled !== false;
       if (isUrgentExit && dumpCheckEnabled && args.position_address) {
         try {
