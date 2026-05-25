@@ -1020,6 +1020,26 @@ export async function closePosition({ position_address, reason }) {
         }
       }
 
+      // (Moved up) Compute wallet delta BEFORE recordPerformance so it persists to lessons.json
+      const RENT_REFUND_SOL = 0.057;
+      let walletSolAfter = null;
+      let executionSlippagePct = null;
+      let realizedPnlSol = null;
+      try {
+        if (config.management.autoSwapAfterClaim) await new Promise(r => setTimeout(r, 3000));
+        const balLamportsAfter = await getConnection().getBalance(wallet.publicKey);
+        walletSolAfter = balLamportsAfter / 1e9;
+        if (walletSolBefore != null && walletSolAfter != null && tracked?.amount_sol) {
+          const walletDelta = walletSolAfter - walletSolBefore;
+          realizedPnlSol = Math.round((walletDelta - tracked.amount_sol - RENT_REFUND_SOL) * 10000) / 10000;
+          const reportedPnlSol = (pnlPct / 100) * tracked.amount_sol;
+          executionSlippagePct = Math.round(((realizedPnlSol - reportedPnlSol) / tracked.amount_sol) * 10000) / 100;
+          log("close", `Wallet Δ=${walletDelta.toFixed(4)}, real PnL=${realizedPnlSol.toFixed(4)} SOL (reported ${reportedPnlSol.toFixed(4)}, slip ${executionSlippagePct.toFixed(2)}%)`);
+        }
+      } catch (e) {
+        log("close_warn", `Failed to capture post-close wallet balance: ${e.message}`);
+      }
+
       await recordPerformance({
         position: position_address,
         pool: poolAddress,
@@ -1039,6 +1059,8 @@ export async function closePosition({ position_address, reason }) {
         minutes_held: minutesHeld,
         close_reason: reason || "agent decision",
         signal_snapshot: tracked.signal_snapshot || null,
+        realized_pnl_sol: realizedPnlSol,
+        execution_slippage_pct: executionSlippagePct,
       });
 
       // Auto-blacklist token after catastrophic loss (rug protection)
@@ -1066,32 +1088,6 @@ export async function closePosition({ position_address, reason }) {
       const perTxGas = 0.0015;
       const swapSlippage = config.management.autoSwapAfterClaim ? 0.0008 : 0;
       const estimatedGasSol = Math.round(((claimAndCloseTxs + swapTxEstimate) * perTxGas + swapSlippage) * 10000) / 10000;
-
-      // Capture wallet SOL balance AFTER close (allow 3s for swap to settle if autoSwap)
-      // walletDelta = deposit_returned + fees_swapped + rent_refund - gas_costs
-      // Real PnL = walletDelta - deposit - rent_refund (gas already in delta)
-      // Slippage = real PnL vs reported PnL (negative = worse than API said)
-      const RENT_REFUND_SOL = 0.057;  // approximate rent reclaim on position close (varies 0.05-0.06)
-      let walletSolAfter = null;
-      let executionSlippagePct = null;
-      let realizedPnlSol = null;
-      try {
-        if (config.management.autoSwapAfterClaim) await new Promise(r => setTimeout(r, 3000));
-        const balLamportsAfter = await getConnection().getBalance(wallet.publicKey);
-        walletSolAfter = balLamportsAfter / 1e9;
-        if (walletSolBefore != null && walletSolAfter != null && tracked?.amount_sol) {
-          const walletDelta = walletSolAfter - walletSolBefore;
-          // Real PnL = wallet gained MINUS the deposit that came back MINUS rent that came back
-          // What's left = pure PnL (positive = win, negative = loss after gas/slippage)
-          realizedPnlSol = Math.round((walletDelta - tracked.amount_sol - RENT_REFUND_SOL) * 10000) / 10000;
-          const reportedPnlSol = (pnlPct / 100) * tracked.amount_sol;
-          // Slip = real PnL vs API-reported PnL (in % of deploy)
-          executionSlippagePct = Math.round(((realizedPnlSol - reportedPnlSol) / tracked.amount_sol) * 10000) / 100;
-          log("close", `Wallet Δ=${walletDelta.toFixed(4)}, real PnL=${realizedPnlSol.toFixed(4)} SOL (reported ${reportedPnlSol.toFixed(4)}, slip ${executionSlippagePct.toFixed(2)}%)`);
-        }
-      } catch (e) {
-        log("close_warn", `Failed to capture post-close wallet balance: ${e.message}`);
-      }
 
       return {
         success: true,

@@ -230,7 +230,10 @@ export async function createLiveMessage(title, intro = "Starting...") {
   async function flushNow() {
     state.flushTimer = null;
     state.flushRequested = false;
-    const text = render();
+    const rawText = render();
+    // Smart escape `<` in content (preserves valid HTML tags) — fixes "Unsupported start tag" errors
+    // when LLM outputs comparison operators like "score < 55"
+    const text = safeHtmlEscape(rawText);
     if (!state.messageId) {
       // Send with HTML parse_mode so footer (finalize text) renders bold/italic correctly
       const sent = await postTelegram("sendMessage", { text: text.slice(0, 4096), parse_mode: "HTML" });
@@ -349,6 +352,16 @@ export function stopPolling() {
 function esc(s) {
   if (!s) return "";
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Smart escape — preserves valid Telegram HTML tags, escapes problematic `<` (e.g., "score < 55")
+// Fixes "Unsupported start tag" errors when LLM outputs comparison operators in text.
+function safeHtmlEscape(text) {
+  if (!text) return "";
+  // First escape ALL <, then unescape valid Telegram HTML tags
+  return String(text)
+    .replace(/</g, "&lt;")
+    .replace(/&lt;(\/?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|a|tg-spoiler|tg-emoji|span)(?:\s[^&]*?)?)>/gi, "<$1>");
 }
 
 // ─── Notification helpers ────────────────────────────────────────
