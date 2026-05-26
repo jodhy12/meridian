@@ -30,7 +30,7 @@ import {
 } from "../state.js";
 import { recordPerformance } from "../lessons.js";
 import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
-import { normalizeMint } from "./wallet.js";
+import { normalizeMint, swapToken, getWalletBalances } from "./wallet.js";
 import { addToBlacklist } from "../token-blacklist.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
@@ -808,7 +808,7 @@ export async function claimFees({ position_address }) {
 }
 
 // ─── Close Position ────────────────────────────────────────────
-export async function closePosition({ position_address, reason }) {
+export async function closePosition({ position_address, reason, skip_swap = false }) {
   position_address = normalizeMint(position_address);
   if (process.env.DRY_RUN === "true") {
     return { dry_run: true, would_close: position_address, message: "DRY RUN — no transaction sent" };
@@ -1020,13 +1020,37 @@ export async function closePosition({ position_address, reason }) {
         }
       }
 
-      // (Moved up) Compute wallet delta BEFORE recordPerformance so it persists to lessons.json
+      // ─── Step 3: Auto-swap base token → SOL ─────────────────
+      // MUST run BEFORE walletSolAfter capture so realized_pnl_sol reflects
+      // the actual SOL received from the swap (not the in-wallet token value).
+      const baseMint = pool?.lbPair?.tokenXMint?.toString() || null;
+      let autoSwapped = false;
+      let autoSwapNote = null;
+      if (config.management.autoSwapAfterClaim && baseMint && !skip_swap) {
+        try {
+          // Give chain a beat after close tx so getWalletBalances sees fresh state
+          await new Promise(r => setTimeout(r, 2000));
+          const balances = await getWalletBalances({});
+          const token = balances?.tokens?.find(t => t.mint === baseMint);
+          if (token && token.usd >= 0.10) {
+            log("close", `Auto-swapping ${token.symbol || baseMint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL`);
+            await swapToken({ input_mint: baseMint, output_mint: "SOL", amount: token.balance });
+            autoSwapped = true;
+            autoSwapNote = `Base token already auto-swapped back to SOL (${token.symbol || baseMint.slice(0, 8)} → SOL). Do NOT call swap_token again.`;
+            // Allow swap tx + balance index to settle before reading wallet
+            await new Promise(r => setTimeout(r, 2000));
+          }
+        } catch (e) {
+          log("close_warn", `Auto-swap after close failed: ${e.message}`);
+        }
+      }
+
+      // Compute wallet delta AFTER auto-swap so realized PnL is accurate
       const RENT_REFUND_SOL = 0.057;
       let walletSolAfter = null;
       let executionSlippagePct = null;
       let realizedPnlSol = null;
       try {
-        if (config.management.autoSwapAfterClaim) await new Promise(r => setTimeout(r, 3000));
         const balLamportsAfter = await getConnection().getBalance(wallet.publicKey);
         walletSolAfter = balLamportsAfter / 1e9;
         if (walletSolBefore != null && walletSolAfter != null && tracked?.amount_sol) {
@@ -1109,6 +1133,8 @@ export async function closePosition({ position_address, reason }) {
         wallet_sol_after: walletSolAfter,
         realized_pnl_sol: realizedPnlSol,
         execution_slippage_pct: executionSlippagePct,
+        auto_swapped: autoSwapped,
+        auto_swap_note: autoSwapNote,
       };
     }
 

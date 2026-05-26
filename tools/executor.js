@@ -511,23 +511,10 @@ export async function executeTool(name, args) {
             });
           }
         }
-        // Auto-swap base token back to SOL unless user said to hold
-        if (!args.skip_swap && result.base_mint) {
-          try {
-            const balances = await getWalletBalances({});
-            const token = balances.tokens?.find(t => t.mint === result.base_mint);
-            if (token && token.usd >= 0.10) {
-              log("executor", `Auto-swapping ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL`);
-              const swapResult = await swapToken({ input_mint: result.base_mint, output_mint: "SOL", amount: token.balance });
-              // Tell the model the swap already happened so it doesn't call swap_token again
-              result.auto_swapped = true;
-              result.auto_swap_note = `Base token already auto-swapped back to SOL (${token.symbol || result.base_mint.slice(0, 8)} → SOL). Do NOT call swap_token again.`;
-              if (swapResult?.amount_out) result.sol_received = swapResult.amount_out;
-            }
-          } catch (e) {
-            log("executor_warn", `Auto-swap after close failed: ${e.message}`);
-          }
-        }
+        // NOTE: auto-swap of base token → SOL is now performed inside closePosition()
+        // (dlmm.js) BEFORE walletSolAfter capture, so realized_pnl_sol / slippage
+        // numbers correctly include the swap output. result.auto_swapped is set by
+        // dlmm.js when the swap fires; do NOT swap here again.
       } else if (name === "claim_fees" && config.management.autoSwapAfterClaim && result.base_mint) {
         try {
           const balances = await getWalletBalances({});
