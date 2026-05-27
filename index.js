@@ -580,10 +580,22 @@ export async function runManagementCycle({ silent = false } = {}) {
       // marginals 0.004 SOL (rate ~0.00009/min), losers 0.004 SOL with drift negative.
       // Threshold 0.00005 SOL/min catches marginals/losers while keeping winners (BABYTROLL win had rate ~0.00009/min at 15-30m).
       // Window 25-45m: before rule 7's 30m flat-fee check, more aggressive on rate.
+      //
+      // 2026-05-27 Pattern-A protection: entries matching the recovery setup (RSI2 25-65 climbing +
+      // bullish supertrend) had 36 closes, 72% WR, 8 big winners — but the 25-45m window was
+      // killing many before they could mature. Audit found 我的刀盾/RICH/Stake/HENRY all had
+      // Pattern-A entries closed at +0.02% via 7b. Extend window to earlyDeadMinAgePatternA
+      // (default 45m) for these — give them one more cycle to develop trailing-TP candidacy.
       const earlyDeadEnabled = config.management.earlyDeadEnabled !== false;
-      const earlyDeadMinAge = config.management.earlyDeadMinAge ?? 25;
+      const earlyDeadMinAgeDefault = config.management.earlyDeadMinAge ?? 25;
+      const earlyDeadMinAgePatternA = config.management.earlyDeadMinAgePatternA ?? 45;
       const earlyDeadMaxAge = config.management.earlyDeadMaxAge ?? 45;
       const earlyDeadRate = config.management.earlyDeadFeeRatePerMin ?? 0.00005;
+      const entrySig = tracked?.signal_snapshot ?? null;
+      const entryRsi2 = entrySig?.rsi2 ?? null;
+      const entryStBull = entrySig?.supertrend_bullish === true;
+      const isPatternAEntry = entryRsi2 !== null && entryRsi2 >= 25 && entryRsi2 <= 65 && entryStBull;
+      const earlyDeadMinAge = isPatternAEntry ? earlyDeadMinAgePatternA : earlyDeadMinAgeDefault;
       if (earlyDeadEnabled &&
           p.in_range &&
           (p.age_minutes ?? 0) >= earlyDeadMinAge &&
@@ -591,7 +603,8 @@ export async function runManagementCycle({ silent = false } = {}) {
           !hasShownLife) {
         const feeRate = (p.unclaimed_fees_usd ?? 0) / Math.max(1, p.age_minutes);
         if (feeRate < earlyDeadRate) {
-          actionMap.set(p.position, { action: "CLOSE", rule: "7b", reason: `Early dead detect: fee rate ${(feeRate*1000).toFixed(3)}m◎/min < ${(earlyDeadRate*1000).toFixed(3)}m◎/min threshold at age ${p.age_minutes}m (peak ${effectivePeakPnl.toFixed(2)}%)` });
+          const patternTag = isPatternAEntry ? " [pattern-A grace expired]" : "";
+          actionMap.set(p.position, { action: "CLOSE", rule: "7b", reason: `Early dead detect${patternTag}: fee rate ${(feeRate*1000).toFixed(3)}m◎/min < ${(earlyDeadRate*1000).toFixed(3)}m◎/min threshold at age ${p.age_minutes}m (peak ${effectivePeakPnl.toFixed(2)}%)` });
           continue;
         }
       }
@@ -1054,9 +1067,12 @@ export async function runScreeningCycle({ silent = false } = {}) {
           }
         }
       }
-      // Bonus warning (not skip) — RSI 15-25 with negative trend = still falling
+      // RSI 15-25 + falling trend + no spike = "still falling, not yet bottomed"
+      // Promoted from warning → hard-skip on 2026-05-27 after 60-close audit: this band had
+      // 83% WR but -0.08% avg PnL (losers Stake -2.38, Poor -1.12 dwarfed tipping winners).
       if (rsi2 !== null && rsi2 >= 15 && rsi2 < 25 && rsi2Trend !== null && rsi2Trend < 0 && !volSpikeNow) {
-        log("screening", `Warning: ${pool.name} — RSI2=${rsi2.toFixed(1)} still falling (Δ${rsi2Trend.toFixed(1)}), no bounce signal yet. Score-only.`);
+        log("screening", `Filtered ${pool.name} — RSI2=${rsi2.toFixed(1)} in 15-25 band still falling (Δ${rsi2Trend.toFixed(1)}), no spike, no bounce signal — wait for bottom`);
+        continue;
       }
 
       if (pool._exit_signal) {
@@ -1070,8 +1086,18 @@ export async function runScreeningCycle({ silent = false } = {}) {
         log("screening", `Filtered ${pool.name} — multi-TF bearish (15m + 1h both bearish supertrend) — strong downtrend, skip`);
         continue;
       }
+      // 2f-bonus.2: 15m bearish supertrend hard-skip for low-quality entries only
+      // Promoted from warning → skip on 2026-05-27. Audit of 30 bearish entries showed score<60
+      // band (DEGEN -3.72, Embrace -2.48) contained ALL clear losers, while score 60-74 still
+      // produced winners (SPCX +2.77, Lobstar +1.93, RICH +1.64). Threshold set at 60 to cut
+      // only the obvious dump candidates without sacrificing 35% of deploy volume.
+      const bearishOverrideScore = config.screening.bearishSupertrendOverrideScore ?? 60;
       if (st15mBearish) {
-        log("screening", `Warning: ${pool.name} — 15m bearish supertrend (1h: ${tech1h?.indicators?.supertrend?.direction || "unknown"}), score ${pool.score}. Passing anyway`);
+        if ((pool.score ?? 0) < bearishOverrideScore) {
+          log("screening", `Filtered ${pool.name} — 15m bearish supertrend (1h: ${tech1h?.indicators?.supertrend?.direction || "unknown"}), score ${pool.score} < ${bearishOverrideScore} override threshold`);
+          continue;
+        }
+        log("screening", `Warning: ${pool.name} — 15m bearish supertrend (1h: ${tech1h?.indicators?.supertrend?.direction || "unknown"}), score ${pool.score} ≥ ${bearishOverrideScore} — passing on score override`);
       }
 
       // 2g. LPer quality signal — lightweight study of top LPers in this pool
@@ -1114,11 +1140,16 @@ export async function runScreeningCycle({ silent = false } = {}) {
         fee_change_pct: pool.fee_change_pct ?? null,        // related signal — fee growth/decline rate
         // Scoring (for evolution tracking)
         score: pool.score ?? null,
-        // Technical (already fetched above)
+        // Technical 15m (already fetched above)
         rsi2: pool._tech_snapshot?.rsi2 ?? null,
+        rsi2_trend: tech?.indicators?.rsi2_trend ?? null,
         supertrend_bullish: pool._tech_snapshot?.supertrend === "up" || (tech?.indicators?.supertrend?.is_bullish ?? null),
         vwap_dist_pct: pool._tech_snapshot?.vwap_dist_pct ?? null,
         volume_spike: pool._tech_snapshot?.volume_spike ?? false,
+        // Technical 1h (macro confirmation — added 2026-05-27 for hold-time >3h winners pattern)
+        rsi2_1h: tech1h?.indicators?.rsi2 ?? null,
+        supertrend_1h_bullish: tech1h?.indicators?.supertrend?.is_bullish ?? null,
+        vwap_dist_pct_1h: tech1h?.indicators?.vwap?.distance_pct ?? null,
         // LPer quality (new — smart money signal layer)
         lper_tier: lperSignal?.tier ?? "none",
         lper_avg_roi_pct: lperSignal?.avg_roi_pct ?? null,
