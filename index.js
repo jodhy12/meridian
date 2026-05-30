@@ -983,8 +983,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
       // 2e. Pre-compute bins — bid_ask asymmetric: tight bins_below for fee concentration,
       // wider bins_above for OOR-up protection during pump (1.5× factor)
+      // 2026-05-28: tightened fallback clamp [15,22] → [12,18] to match ATR formula tightening
       const vol = Number(pool.volatility || 3);
-      const binsBelowCalc = Math.min(22, Math.max(15, Math.round(15 + (vol / 5) * 7)));
+      const binsBelowCalc = Math.min(18, Math.max(12, Math.round(12 + (vol / 5) * 6)));
       const atrBins = tech?.suggested_bins_below ?? null;
       const baseBins = atrBins ?? binsBelowCalc;
       pool._bins_below = baseBins;

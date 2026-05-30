@@ -416,19 +416,21 @@ export async function executeTool(name, args) {
     if (!args.bins_below || args.bins_below <= 0) {
       const vol = snap.volatility ?? args.volatility ?? 3;
       // bid_ask thesis: SOL piled in corner waits for dip → swap to token cheap → recover
-      // Needs room for dip to play out. Vol-scaled: low vol → 15, high vol → 22.
-      args.bins_below = Math.round(Math.min(Math.max(15 + (vol / 5) * 7, 15), 22));
-      log("executor", `Auto-filled bins_below=${args.bins_below} (volatility: ${vol}, bid_ask thesis)`);
+      // Vol-scaled: low vol → 8, high vol → 14 (2026-05-28: tightened from [15,22] to match
+      // primary ATR formula in tools/ohlcv.js — fee concentration for 0.5 SOL deploy where
+      // gas is 2% per cycle, need higher fee yield per swap to clear gas).
+      args.bins_below = Math.round(Math.min(Math.max(8 + (vol / 5) * 6, 8), 14));
+      log("executor", `Auto-filled bins_below=${args.bins_below} (volatility: ${vol}, bid_ask thesis, tight clamp [8,14])`);
     } else if (args.bins_below > (config.management.maxBinsBelow ?? 25)) {
       const capped = config.management.maxBinsBelow ?? 25;
       log("executor", `Clamped LLM bins_below ${args.bins_below} → ${capped}`);
       args.bins_below = capped;
     }
     if (!args.bins_above || args.bins_above <= 0) {
-      // Mirror bins_below — symmetric narrow gives room for price to recover after dip
-      // Previously asymmetric (×0.2 floor 6) → caused chronic OOR-up exits on meme pumps
-      args.bins_above = args.bins_below;
-      log("executor", `Auto-filled bins_above=${args.bins_above} (mirror bins_below)`);
+      // Asymmetric — wider above for OOR-up pump protection (matches screener formula 1.5×)
+      // 2026-05-28: was mirror bins_below; switched to 1.5× to align with index.js bin formula
+      args.bins_above = Math.round(args.bins_below * 1.5);
+      log("executor", `Auto-filled bins_above=${args.bins_above} (1.5× bins_below for pump-up buffer)`);
     } else {
       const maxAbove = config.management.maxBinsAbove ?? 15;
       if (args.bins_above > maxAbove) {
