@@ -156,8 +156,8 @@ WARNING: This executes a real on-chain transaction. Check DRY_RUN mode.`,
           },
           strategy: {
             type: "string",
-            enum: ["bid_ask", "spot"],
-            description: "DLMM strategy type. If user specifies, use exactly what they said. Otherwise use the active strategy's lp_strategy field."
+            enum: ["bid_ask", "spot", "curve", "mix"],
+            description: "DLMM strategy type. Use 'mix' for dump-entry pools (shown as [DUMP ENTRY] in candidate block) — blends bid_ask+spot for immediate fee generation. Otherwise use 'bid_ask' by default."
           },
           bins_below: {
             type: "number",
@@ -740,7 +740,7 @@ The strategy will be available for selection before future deployments.`,
           id:           { type: "string", description: "Short slug e.g. 'overnight_classic_bid_ask', 'panda_strat'" },
           name:         { type: "string", description: "Human-readable name" },
           author:       { type: "string", description: "Strategy author/creator" },
-          lp_strategy:  { type: "string", enum: ["bid_ask", "spot", "curve"], description: "LP strategy type" },
+          lp_strategy:  { type: "string", enum: ["bid_ask", "spot", "curve", "mix"], description: "LP strategy type" },
           token_criteria: {
             type: "object",
             description: "Token selection criteria",

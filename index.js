@@ -1175,6 +1175,33 @@ export async function runScreeningCycle({ silent = false } = {}) {
         lper_credible_count: lperSignal?.credible_count ?? 0,
       });
 
+      // 2g. PVP detection — rival token with same symbol and real activity
+      // Confused buyers split flow between two pools → volume dilution, fees halved
+      if (ti?.symbol && pool.base?.mint) {
+        try {
+          const rivalSearch = await getTokenInfo({ query: ti.symbol }).catch(() => null);
+          const rivals = (rivalSearch?.results ?? []).filter(r =>
+            r.mint !== pool.base.mint &&
+            ((r.global_fees_sol != null && r.global_fees_sol > 5) ||
+             (r.holders != null && r.holders > 500))
+          );
+          if (rivals.length > 0) {
+            const top = rivals.sort((a, b) => (b.global_fees_sol ?? 0) - (a.global_fees_sol ?? 0))[0];
+            pool.is_pvp         = true;
+            pool.pvp_risk       = (top.global_fees_sol > 30 || top.holders > 1000) ? "high" : "moderate";
+            pool.pvp_rival_fees = top.global_fees_sol;
+            pool.pvp_rival_holders = top.holders;
+            log("screening", `PVP detected for ${pool.name} — rival ${ti.symbol} (fees=${top.global_fees_sol} SOL, holders=${top.holders}, risk=${pool.pvp_risk})`);
+          }
+        } catch { /* best effort */ }
+
+        // Hard block high-risk PVP if configured
+        if (pool.is_pvp && pool.pvp_risk === "high" && config.screening.blockPvpSymbols) {
+          log("screening", `Filtered ${pool.name} — PVP high-risk blocked (blockPvpSymbols=true)`);
+          continue;
+        }
+      }
+
       enriched.push({ pool, ti });
       await new Promise(r => setTimeout(r, 500)); // GeckoTerminal rate limit
     }
@@ -1194,6 +1221,37 @@ export async function runScreeningCycle({ silent = false } = {}) {
       log("screening", `All candidates below minDeployScore (${minScore}): ${names} — skipping LLM`);
       screenReport = `⛔ NO DEPLOY\n\nAll ${enriched.length} candidates scored below minimum (${minScore}). Best: ${bestScore}. Skipped LLM to save tokens.\nCandidates: ${names}`;
       return screenReport;
+    }
+
+    // ── Lone candidate gate: deterministic skip when only 1 survives ─────────
+    // Prevents weak lone-candidate deploys without burning LLM tokens.
+    // When ≥2 candidates exist the LLM can compare and exercise judgment;
+    // with exactly 1 there is no comparison — enforce hard quality floor.
+    if (enriched.length === 1) {
+      const { pool: lp, ti: lti } = enriched[0];
+      const feesSol  = lti?.global_fees_sol;
+      const top10    = lti?.audit?.top_holders_pct != null ? Number(lti.audit.top_holders_pct) : null;
+      const minFees  = config.screening.minTokenFeesSol;
+      const maxTop10 = config.screening.maxTop10Pct;
+
+      const skipReason =
+        lp.is_wash === true
+          ? "wash trading detected"
+        : lp.is_rugpull === true && !lp.smart_wallets_present
+          ? "rugpull flag with no smart wallet backing"
+        : lp.is_pvp && lp.pvp_risk === "high" && !lp.smart_wallets_present
+          ? `PVP high-risk (rival ${lp.pvp_rival_fees?.toFixed(1)} SOL fees, ${lp.pvp_rival_holders} holders) — no smart wallet confirmation`
+        : feesSol != null && minFees != null && feesSol < minFees
+          ? `global_fees_sol ${feesSol} < min ${minFees}`
+        : top10 != null && maxTop10 != null && top10 > maxTop10
+          ? `top10 holders ${top10}% > max ${maxTop10}%`
+        : null;
+
+      if (skipReason) {
+        log("screening", `Lone candidate ${lp.name} skipped — ${skipReason}`);
+        screenReport = `⛔ NO DEPLOY\n\nOnly candidate (${lp.name}) failed lone-candidate gate: ${skipReason}`;
+        return screenReport;
+      }
     }
 
     // ── Step 3: Build candidate blocks for LLM ──────────────────────────────
@@ -1256,6 +1314,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         `  Metrics:  fee_tvl=${feeMultiTF} | vol=$${pool.volume_window} | tvl=$${pool.active_tvl} | volatility=${vol} | organic=${pool.organic_score} | mcap=$${pool.mcap}${pool.token_age_hours != null ? ` | age=${pool.token_age_hours}h` : ""}`,
         `  Audit:    top10=${top10}% | bots=${bots}%${bundlePct != null ? ` | bundle=${bundlePct}%` : ""} | fees_sol=${feesSol}${holderCount != null ? ` | holders=${holderCount}` : ""}${launchpad ? ` | launchpad=${launchpad}` : ""}`,
         `  Risk:     ${okxRisk}`,
+        pool.is_pvp ? `  PVP:      ⚠️ rival token with same symbol (risk=${pool.pvp_risk}, rival_fees=${pool.pvp_rival_fees?.toFixed(1)} SOL, rival_holders=${pool.pvp_rival_holders})` : null,
         okxTags ? `  Tags:     ${okxTags}` : null,
         pool.price_vs_ath_pct != null ? `  ATH:      price_vs_ath=${pool.price_vs_ath_pct}%` : null,
         `  Tech:     ${techStatus} | supertrend ${stMultiTF}`,

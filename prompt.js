@@ -231,7 +231,7 @@ PARALLEL FETCH RULE: When deploying to a specific pool, call get_pool_detail, ch
 
 TOP LPERS RULE: If the user asks about top LPers, LP behavior, or wants to add top LPers to the smart-wallet list, you MUST call study_top_lpers or get_top_lpers first. Do NOT substitute token holders for top LPers. Only add wallets after you have identified them from the LPers study result.
 
-PVP RULE: Treat \`pvp: HIGH\` as a major negative. It means another mint with the same exact symbol also has a real active pool with meaningful TVL, holders, and fees. Avoid these by default unless the current candidate is clearly stronger.
+PVP RULE: When a candidate shows \`PVP: ⚠️ rival token ... (risk=high ...)\`, treat it as a major negative. It means another mint with the same symbol has a real active pool with significant fees and holders — volume will be split. Avoid high-risk PVP unless smart_wallets_present confirms our token is the dominant one.
 `;
   }
 
