@@ -371,7 +371,9 @@ export async function getTechnicalSignals({ pool_address, timeframe = "15m" }) {
 
   // ── Entry warnings ─────────────────────────────────────────
   const entryWarnings = [];
-  if (volSpike?.is_spike)    entryWarnings.push(volSpike.warning);
+  // Volume spike at rsi2<15 = Pattern B buyer step-in (valid entry) — no warning
+  // Volume spike at rsi2>=15 = potential peak / high OOR risk — warn
+  if (volSpike?.is_spike && !(rsiVal != null && rsiVal < 15)) entryWarnings.push(volSpike.warning);
   if (stVal && !stVal.is_bullish) entryWarnings.push(stVal.warning);
 
   // Verifiable diagnostic log — cross-check against TradingView (same TF, same indicator settings)
@@ -432,5 +434,53 @@ export async function getTechnicalSignals({ pool_address, timeframe = "15m" }) {
     entry_ok:       entryWarnings.length === 0,
     entry_warnings: entryWarnings,
     suggested_bins_below: atrVal?.suggested_bins_below ?? null,
+    // ── BOUNCE signal (SCREENER — dump entry mode) ──────────
+    // Score 0–100: probability price will recover from current dump level.
+    // Factors: RSI2 extreme + trend direction + volume spike (buyer step-in)
+    //          + MACD first green bar + VWAP distance + supertrend.
+    bounce_score:    (() => {
+      let s = 0;
+      if (rsiVal !== null) {
+        if (rsiVal < 10)      s += 35;
+        else if (rsiVal < 15) s += 25;
+        else if (rsiVal < 25) s += 15;
+        else if (rsiVal < 35) s += 8;
+      }
+      if (rsi2Trend !== null) {
+        if (rsi2Trend >= 10)      s += 30;
+        else if (rsi2Trend >= 5)  s += 20;
+        else if (rsi2Trend > 0)   s += 10;
+        else if (rsi2Trend < -5)  s = Math.max(0, s - 15); // still falling hard — penalise
+      }
+      // Volume spike at oversold = buyer step-in confirmation
+      if (volSpike?.is_spike && rsiVal !== null && rsiVal < 35) s += 20;
+      // MACD first green bar = momentum flip
+      if (macdVal?.first_green_bar) s += 15;
+      // Healthy oversold distance from VWAP
+      const vd = vwapVal?.distance_pct ?? 0;
+      if (vd <= -5 && vd >= -22) s += 10;
+      // Supertrend already bullish
+      if (stVal?.is_bullish) s += 10;
+      return Math.min(100, Math.max(0, s));
+    })(),
+    // Dump entry mode: strong bounce signal, price in dump zone — flip bins for bounce capture
+    // bins_below=4 (minimal downside exposure) bins_above=20 (maximise bounce traversal)
+    is_dump_entry: (() => {
+      const score = (() => {
+        let s = 0;
+        if (rsiVal !== null) {
+          if (rsiVal < 10) s += 35; else if (rsiVal < 15) s += 25; else if (rsiVal < 25) s += 15; else if (rsiVal < 35) s += 8;
+        }
+        if (rsi2Trend !== null) { if (rsi2Trend >= 10) s += 30; else if (rsi2Trend >= 5) s += 20; else if (rsi2Trend > 0) s += 10; else if (rsi2Trend < -5) s = Math.max(0, s - 15); }
+        if (volSpike?.is_spike && rsiVal !== null && rsiVal < 35) s += 20;
+        if (macdVal?.first_green_bar) s += 15;
+        const vd = vwapVal?.distance_pct ?? 0;
+        if (vd <= -5 && vd >= -22) s += 10;
+        if (stVal?.is_bullish) s += 10;
+        return Math.min(100, Math.max(0, s));
+      })();
+      const vd = vwapVal?.distance_pct ?? 0;
+      return score >= 50 && rsiVal !== null && rsiVal < 35 && vd < -5;
+    })(),
   };
 }

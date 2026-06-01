@@ -77,6 +77,10 @@ export const config = {
     extremeOversoldRequiresSpike:    u.extremeOversoldRequiresSpike    ?? true,
     extremeOversoldExemptAgeHours:   u.extremeOversoldExemptAgeHours   ?? 72,
     extremeOversoldExemptMcap:       u.extremeOversoldExemptMcap       ?? 1000000,
+
+    // ─── Bounce / dump entry gates ─────────────────────────────────────────
+    dumpEntryBounceMinScore:         u.dumpEntryBounceMinScore         ?? 40,   // min bounce_score (0-100) to allow deploy
+    bearishSupertrendOverrideScore:  u.bearishSupertrendOverrideScore  ?? 60,   // bearish ST only blocks if score < this
   },
 
   // ─── Position Management ────────────────

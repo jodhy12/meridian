@@ -152,15 +152,22 @@ Timeframe: ${config.screening.timeframe} | fee_tvl floor: ${config.screening.min
 
 All candidates are pre-scored and pre-enriched. Pick the highest-score candidate that passes judgment and call deploy_position. Use bins_below/bins_above exactly as pre-computed.
 
-STRATEGY: bid_ask single-sided SOL (post-dip-then-recover LP thesis). Bearish supertrend + price below VWAP = ENTRY OPPORTUNITY, not a skip signal. Skip only on pump entries (VWAP > +5%, RSI2 > 70) or extreme dips with no support (VWAP < -25%, falling knife). The deploy goal text contains the full thesis — read it.
+STRATEGY: bid_ask (or mix) single-sided SOL — post-dip-then-recover LP thesis. Bearish supertrend + price below VWAP = ENTRY OPPORTUNITY. Skip only on pump (VWAP > +5%, RSI2 > 70) or falling knife (VWAP < -25%, no support).
 
 ENTRY GUIDANCE (general):
 - Sweet spot: vwap_dist -15% to -5% (post-dip recovering) + rsi2 25-65
-- BONUS if rsi2_trend > 0 (RSI climbing vs prev candle = bounce in progress)
-- BONUS if volume_spike at entry (= active buyer interest)
+- BONUS if rsi2_trend > 0 (RSI climbing = bounce starting)
+- BONUS if volume_spike at entry (buyer step-in confirmed)
+- BONUS if bounce_score >= 60 (composite bounce signal — higher = stronger recovery potential)
 - 1h supertrend bullish while 15m bearish = pullback in uptrend (best case)
 - Extreme oversold (rsi2 < 15) acceptable ONLY with volume_spike OR established token (age >= 72h + mcap >= $1M)
 - Bigger mcap = more stable swap volume; lower bot_holders_pct = healthier flow
+
+DUMP ENTRY MODE (when candidate shows [DUMP ENTRY] label + strategy=mix):
+- Price is in active dump with strong bounce signal — deploy with mix strategy
+- Mix = 80% bid_ask + 20% spot distribution: SOL spread across ALL bins (not just edges)
+- This makes fees print from FIRST price movement (vs pure bid-ask that only prints at extremes)
+- Use strategy="mix" exactly as shown — do not change to bid_ask
 
 HARD RULES:
 - get_top_candidates returns 0 pools → output "⛔ NO DEPLOY — no candidates available" as final answer immediately. DO NOT call search_pools, get_token_info, check_smart_wallets_on_pool, or any other discovery tool to chase alternatives.

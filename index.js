@@ -981,17 +981,30 @@ export async function runScreeningCycle({ silent = false } = {}) {
         continue;
       }
 
-      // 2e. Pre-compute bins — bid_ask asymmetric: tight bins_below for fee concentration,
-      // wider bins_above for OOR-up protection during pump (1.5× factor)
-      // 2026-05-28: tightened fallback clamp [15,22] → [12,18] to match ATR formula tightening
+      // 2e. Pre-compute bins
       const vol = Number(pool.volatility || 3);
       const binsBelowCalc = Math.min(18, Math.max(12, Math.round(12 + (vol / 5) * 6)));
       const atrBins = tech?.suggested_bins_below ?? null;
       const baseBins = atrBins ?? binsBelowCalc;
-      pool._bins_below = baseBins;
-      pool._bins_above = Math.round(baseBins * 1.5);
+
+      // Dump entry mode (spot-on-dump + mix strategy):
+      // Symmetric bins: price at center of range. Mix strategy spreads SOL across all bins
+      // so fees print immediately from first price movement (not only at bid-ask extremes).
+      // Pure bid-ask = almost no SOL near active bin → low initial fee rate → Early Dead.
+      // Mix = moderate SOL in all bins → higher initial fee → survives 7b check.
+      if (tech?.is_dump_entry) {
+        pool._bins_below = baseBins;
+        pool._bins_above = baseBins;          // symmetric — price at center
+        pool._dump_entry = true;
+        pool._strategy   = "mix";            // blend bid_ask + spot for immediate fees
+      } else {
+        pool._bins_below = baseBins;
+        pool._bins_above = Math.round(baseBins * 1.5);
+        pool._dump_entry = false;
+        pool._strategy   = "bid_ask";
+      }
+
       // bid_ask thesis: bearish supertrend + post-dip = OPPORTUNITY, not warning
-      // We're LPing, not directional trading. Fees come from frantic dip-buyers at the bottom.
       const _rsi2 = tech?.indicators?.rsi2 ?? 50;
       const _vwapForGate = tech?.indicators?.vwap?.distance_pct ?? 0;
       const _isDipZone = _vwapForGate < -3 && _rsi2 < 55;
@@ -1003,11 +1016,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
       pool._tech_warn  = _filteredWarnings;
       pool._exit_signal = tech?.exit_signal ?? false;
       pool._tech_snapshot = tech ? {
-        rsi2: tech.indicators?.rsi2 ?? null,
-        supertrend: tech.indicators?.supertrend?.direction ?? null,
-        supertrend_1h: tech1h?.indicators?.supertrend?.direction ?? null,
-        vwap_dist_pct: tech.indicators?.vwap?.distance_pct ?? null,
-        volume_spike: tech.indicators?.volume_spike?.is_spike ?? false,
+        rsi2:           tech.indicators?.rsi2 ?? null,
+        supertrend:     tech.indicators?.supertrend?.direction ?? null,
+        supertrend_1h:  tech1h?.indicators?.supertrend?.direction ?? null,
+        vwap_dist_pct:  tech.indicators?.vwap?.distance_pct ?? null,
+        volume_spike:   tech.indicators?.volume_spike?.is_spike ?? false,
+        bounce_score:   tech.bounce_score ?? null,
+        is_dump_entry:  tech.is_dump_entry ?? false,
       } : null;
 
       // 2f. Hard filter — bearish trend or overbought entry
@@ -1147,6 +1162,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
         supertrend_bullish: pool._tech_snapshot?.supertrend === "up" || (tech?.indicators?.supertrend?.is_bullish ?? null),
         vwap_dist_pct: pool._tech_snapshot?.vwap_dist_pct ?? null,
         volume_spike: pool._tech_snapshot?.volume_spike ?? false,
+        bounce_score: pool._tech_snapshot?.bounce_score ?? null,
+        is_dump_entry: pool._tech_snapshot?.is_dump_entry ?? false,
         // Technical 1h (macro confirmation — added 2026-05-27 for hold-time >3h winners pattern)
         rsi2_1h: tech1h?.indicators?.rsi2 ?? null,
         supertrend_1h_bullish: tech1h?.indicators?.supertrend?.is_bullish ?? null,
@@ -1243,7 +1260,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
         pool.price_vs_ath_pct != null ? `  ATH:      price_vs_ath=${pool.price_vs_ath_pct}%` : null,
         `  Tech:     ${techStatus} | supertrend ${stMultiTF}`,
         lperLine,
-        `  Bins:     below=${pool._bins_below} above=${pool._bins_above} (use as-is, do NOT recalculate)`,
+        `  Bins:     below=${pool._bins_below} above=${pool._bins_above}${pool._dump_entry ? " [DUMP ENTRY — symmetric, bounce capture]" : ""} (use as-is, do NOT recalculate)`,
+        `  Strategy: ${pool._strategy ?? "bid_ask"}${pool._dump_entry ? " — IMPORTANT: use strategy=\"mix\" for this pool (more even distribution = fees from first price movement, prevents early-dead)" : ""}`,
         `  Pool:     ${pool.pool}`,
       ].filter(Boolean).join("\n");
     });

@@ -754,6 +754,75 @@ async function runSafetyChecks(name, args) {
         }
       }
 
+      // Bounce score gate: require sufficient recovery potential before any dump entry
+      // Prevents deploying into falling knives where price has no confirmed bottom
+      {
+        const snap = args.signal_snapshot || {};
+        const bounceScore = snap.bounce_score ?? null;
+        const minBounce = config.screening?.dumpEntryBounceMinScore ?? 40;
+        if (bounceScore !== null && bounceScore < minBounce) {
+          return {
+            pass: false,
+            reason: `Bounce score too low: ${bounceScore} < ${minBounce} — no sufficient recovery signal (RSI trend, volume spike, or MACD flip needed)`,
+          };
+        }
+      }
+
+      // Hard-skip rules: CLAUDE.md strategy rules enforced at code level
+      // These are data-validated patterns — LLM cannot override.
+      {
+        const snap = args.signal_snapshot || {};
+        const rsi2 = snap.rsi2;
+        const rsi2Trend = snap.rsi2_trend;
+        const vwapDist = snap.vwap_dist_pct;
+        const volSpike = snap.volume_spike;
+        const supertrendBullish = snap.supertrend_bullish;
+        const tokenAge = snap.token_age_hours;
+        const mcap = snap.mcap;
+        const snapScore = snap.score ?? (getCachedPoolSignals(args.pool_address)?.score);
+        const bearishSTThreshold = config.screening?.bearishSupertrendOverrideScore ?? 60;
+
+        if (rsi2 != null) {
+          if (rsi2 > 70) {
+            return { pass: false, reason: `Hard skip: RSI2=${rsi2.toFixed(1)} overbought (>70) — pump trap` };
+          }
+          // Extreme oversold + no volume spike = falling knife unless established token (Pattern B-alt)
+          if (rsi2 < 15 && !volSpike) {
+            const ageOk  = tokenAge != null && tokenAge >= 72;
+            const mcapOk = mcap != null && mcap >= 1_000_000;
+            if (!ageOk || !mcapOk) {
+              return {
+                pass: false,
+                reason: `Hard skip: RSI2=${rsi2.toFixed(1)} extreme oversold + no volume spike (age=${tokenAge}h, mcap=$${(mcap||0).toLocaleString()}) — Pattern B-alt requires age≥72h AND mcap≥$1M`,
+              };
+            }
+          }
+          // Still falling zone: 60-close audit showed losers dwarf winners here
+          if (rsi2 >= 15 && rsi2 <= 25 && rsi2Trend != null && rsi2Trend < 0 && !volSpike) {
+            return {
+              pass: false,
+              reason: `Hard skip: RSI2=${rsi2.toFixed(1)} still falling (trend=${rsi2Trend}) + no volume spike — 83% WR but avg -0.08% (losers dwarf winners)`,
+            };
+          }
+        }
+
+        if (vwapDist != null) {
+          if (vwapDist > 5) {
+            return { pass: false, reason: `Hard skip: price ${vwapDist.toFixed(1)}% above VWAP — pump trap entry` };
+          }
+          if (vwapDist < -25) {
+            return { pass: false, reason: `Hard skip: price ${vwapDist.toFixed(1)}% below VWAP — no support, dead cat territory` };
+          }
+        }
+
+        if (supertrendBullish === false && snapScore != null && snapScore < bearishSTThreshold) {
+          return {
+            pass: false,
+            reason: `Hard skip: bearish 15m supertrend + score ${snapScore} < ${bearishSTThreshold} — all clear losers in audit (DEGEN -3.72%, Embrace -2.48%)`,
+          };
+        }
+      }
+
       // Check amount limits
       const amountY = args.amount_y ?? args.amount_sol ?? 0;
       if (amountY <= 0) {
