@@ -167,14 +167,17 @@ export async function deployPosition({
   const maxBinId = activeBin.binId + activeBinsAbove;
 
   const strategyMap = {
-    spot: StrategyType.Spot,
-    curve: StrategyType.Curve,
+    spot:    StrategyType.Spot,
+    curve:   StrategyType.Curve,
     bid_ask: StrategyType.BidAsk,
+    // mix = bid_ask + spot blend — placeholder until addLiquidityByWeight is implemented
+    // For now falls back to curve (bell-curve distribution = natural middle ground between spot and bid_ask)
+    mix:     StrategyType.Curve,
   };
 
   const strategyType = strategyMap[activeStrategy];
   if (strategyType === undefined) {
-    throw new Error(`Invalid strategy: ${activeStrategy}. Use spot, curve, or bid_ask.`);
+    throw new Error(`Invalid strategy: ${activeStrategy}. Use spot, curve, bid_ask, or mix.`);
   }
 
   // Calculate amounts
