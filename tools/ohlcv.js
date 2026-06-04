@@ -107,11 +107,12 @@ function atr(bars, period = 14) {
   }
   const currentPrice = bars[bars.length - 1].close;
   const atrPct = (atrVal / currentPrice) * 100;
-  // Suggest bins_below: scale ATR% linearly → [8, 14] (tighter concentration for small capital)
-  // Tightened 2026-05-28 from [10,18]: medium range diluting fees, stop -10/-10 needs less buffer.
-  // Lower clamp = more fees per swap (gas 2% on 0.5 SOL needs higher yield per trade to clear).
-  // History: [15,30] (initial) → [10,18] (2026-05-21) → [8,14] (2026-05-28)
-  const suggestedBins = Math.round(Math.min(14, Math.max(8, 8 + (atrPct / 10) * 6)));
+  // Suggest bins_below: scale ATR% linearly → [12, 20]
+  // Bengbeng wallet analysis (Jun 2026): medium range -10% to -40% = WR 85%, avg +1.17%
+  //   vs tight 0% to -10% = WR 63%, avg -0.55% (worst category)
+  // At 100bp bin_step: 12 bins = 12% range, 20 bins = 20% range → medium territory
+  // History: [15,30] → [10,18] → [8,14] → [12,20] (widened back based on bengbeng data)
+  const suggestedBins = Math.round(Math.min(20, Math.max(12, 10 + (atrPct / 10) * 8)));
   return {
     value:          Math.round(atrVal * 1e8) / 1e8,
     pct:            Math.round(atrPct * 100) / 100,

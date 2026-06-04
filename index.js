@@ -973,17 +973,18 @@ export async function runScreeningCycle({ silent = false } = {}) {
         } catch { /**/ }
       }
 
-      // Fail-closed: skip pool if BOTH timeframes failed (can't verify trend at all)
-      // Single-TF failure is acceptable — at least one direction confirmed
-      // Note: skip1hReason path means we intentionally skipped 1h — only fail if 15m also failed
+      // Fail-open on 429 rate limit: allow pool through with null tech signals rather than skip.
+      // Skipping on every 429 was blocking ALL candidates during GeckoTerminal rate-limit windows.
+      // The LLM and executor checks still gate on fee_tvl, organic, bot holders etc.
       if (!techFetchOk && !tech1hFetchOk) {
-        log("screening", `Filtered ${pool.name} — multi-TF tech check unavailable (OHLCV fetch failed 15m+1h, likely 429 rate limit). Cannot verify trend, skipping for safety.`);
-        continue;
+        log("screening", `${pool.name} — OHLCV unavailable (likely 429 rate limit). Allowing through with unverified technicals — LLM will exercise judgment.`);
+        // tech stays null → bins use volatility fallback, no ST/RSI filters applied
       }
 
       // 2e. Pre-compute bins
       const vol = Number(pool.volatility || 3);
-      const binsBelowCalc = Math.min(18, Math.max(12, Math.round(12 + (vol / 5) * 6)));
+      // Fallback bins (no ATR): target medium range -15% to -25% per bengbeng analysis
+      const binsBelowCalc = Math.min(22, Math.max(14, Math.round(14 + (vol / 5) * 6)));
       const atrBins = tech?.suggested_bins_below ?? null;
       const baseBins = atrBins ?? binsBelowCalc;
 
